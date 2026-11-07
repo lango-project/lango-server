@@ -1,0 +1,57 @@
+import js "node:path" as path
+import js global Object
+import js global Number
+import js global process
+
+export databaseOptions(root, spec, workers)
+
+databaseOptions(root, spec, workers)
+    if spec == null
+        return null
+    if !is_object(spec) or is_array(spec)
+        throw "Database configuration must be a map"
+    allowed = []
+    switch spec.type
+      case "sqlite"
+          allowed = ["type", "file", "busyTimeoutMs"]
+      case "postgresql"
+          allowed = ["type", "connectionEnv", "queryTimeoutMs", "connectTimeoutSeconds"]
+      else
+          throw "Database type must be sqlite or postgresql"
+    for spec as key: value
+        if !allowed.includes(key)
+            throw "Unknown database option: ${key}"
+    if spec.type == "sqlite"
+        if !is_string(spec.file) or spec.file == ""
+            throw "SQLite database file is required"
+        file = spec.file
+        if file == ":memory:" and workers != 1
+            throw "An in-memory SQLite database requires exactly one worker"
+        if file != ":memory:"
+            file = path/resolve(root, file)
+        return {
+            type: "sqlite"
+            file: file
+            busyTimeoutMs: positive(spec.busyTimeoutMs, 5000)
+        }
+    name = spec.connectionEnv
+    if !is_string(name) or name == "" or !Object/hasOwn(process.env, name)
+        throw "PostgreSQL connectionEnv must name an existing environment variable"
+    connection = process.env[name]
+    if !is_string(connection) or (!connection.startsWith("postgresql://") and !connection.startsWith("postgres://"))
+        throw "PostgreSQL connectionEnv must contain a PostgreSQL connection URL"
+    return {
+        type: "postgresql"
+        connection: connection
+        queryTimeoutMs: positive(spec.queryTimeoutMs, 5000)
+        connectTimeoutSeconds: positive(spec.connectTimeoutSeconds, 5)
+    }
+
+positive(value, fallback)
+    if value == null
+        return fallback
+    if is_string(value)
+        value = Number(value)
+    if !Number/isSafeInteger(value) or value < 1 or value > 2147483647
+        throw "Database timeout must be a positive integer within the timer limit"
+    return value

@@ -1,0 +1,347 @@
+import "../options"
+    options(root, supplied = null)
+import "../tokens"
+    class Tokens
+import "../database"
+    class Database
+import "../database_options"
+    databaseOptions(root, spec, workers)
+import js "@lango-project/lango-server" as api
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:crypto" as crypto
+import js global process
+import js global Promise
+import js global Object
+import js global fetch
+import js global Date
+
+provider()
+    if process.env.LANGO_TEST_POSTGRES != null
+        return {
+            type: "postgresql"
+            connectionEnv: "LANGO_TEST_POSTGRES"
+            queryTimeoutMs: 100
+        }
+    file = path/resolve(".test-output", "database-${crypto/randomUUID()}.sqlite")
+    return {
+        type: "sqlite"
+        file: file
+    }
+
+withDatabase(run, extra = null)
+    spec = provider()
+    builder = new api/Builder(process.cwd())
+    settings = {
+        key: "01234567890123456789012345678901"
+        port: 0
+        workers: 2
+        database: spec
+        requestEvent: true
+    }
+    if extra != null
+        Object/assign(settings, extra)
+    builder.configure(settings)
+    module = path/resolve(".test-output/sql_handlers.mjs")
+    builder.endpoint({
+        path: "/sql"
+        module: module
+        handler: "handle"
+        auth: "anonymous"
+    })
+    for ["register", "validate", "request"] as name
+        handler = name
+        if name == "request"
+            handler = "audit"
+        builder.event({
+            name: name
+            module: module
+            handler: handler
+        })
+    server = builder.build()
+    return chain server.start()
+      then(address)
+        capture run
+        return run(address)
+      finally
+        capture server
+        return server.close()
+      finally
+        capture spec
+        capture fs
+        if spec.type == "sqlite"
+            for ["", "-wal", "-shm"] as suffix
+                fs/rmSync("${spec.file}${suffix}", {
+                    force: true
+                })
+        return null
+
+call(address, input, token = null, extra = null)
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if extra != null
+        Object/assign(headers, extra)
+    if token != null
+        headers.Authorization = "Bearer ${token}"
+    return chain fetch("http://127.0.0.1:${address.port}/sql", {
+        method: "POST"
+        headers: headers
+        body: to_json(input)
+    })
+      then(res)
+        return chain res.json()
+          then(body)
+            capture res
+            return {
+                status: res.status
+                body: body
+                token: res.headers.get("x-lango-token")
+            }
+
+scenario(address)
+    id = crypto/randomUUID()
+    return chain call(address, {
+        action: "schema"
+    })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        assert result.body.registered == 1
+        return call(address, {
+            action: "insert"
+            id: id
+            value: "O'Brien: :value is data"
+            amount: "12345678901234567890.123456789"
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        assert result.body.value == "O'Brien: :value is data"
+        assert result.body.amount == "12345678901234567890.123456789"
+        return call(address, {
+            action: "async"
+            id: id
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        assert result.body.id == id
+        return validationScenario(address, id)
+
+failureScenario(address, id)
+    return chain call(address, {
+        action: "unclosed"
+        id: "unclosed-${id}"
+        value: "must rollback"
+        amount: "1"
+    })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 500
+        assert result.token == null
+        return call(address, {
+            action: "select"
+            id: "unclosed-${id}"
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        assert result.body == null
+        return call(address, {
+            action: "throw"
+            id: "throw-${id}"
+            value: "must rollback"
+            amount: "1"
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 500
+        return call(address, {
+            action: "select"
+            id: "throw-${id}"
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.body == null
+        return transactionScenario(address, id)
+
+transactionScenario(address, id)
+    return chain call(address, {
+        action: "nested"
+    })
+      then(result)
+        capture address
+        assert result.status == 200
+        assert result.body.before == "rollback_only"
+        assert result.body.rolled == true
+        assert result.body.after == null
+        return call(address, {
+            action: "failed"
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        assert result.body.after == null
+        if process.env.LANGO_TEST_POSTGRES != null
+            assert result.body.state == "failed"
+            assert result.body.code == "42703"
+        return call(address, {
+            action: "select"
+            id: id
+            auditId: "audit-${id}"
+            auditUnclosed: true
+        })
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        assert result.body.id == id
+        return call(address, {
+            action: "select"
+            id: "audit-${id}"
+        })
+      then(result)
+        assert result.status == 200
+        assert result.body == null
+        return null
+
+test "configured database supplies SQL to handlers, callbacks and events without transaction leakage"
+    run = (address)
+        return scenario(address)
+    return withDatabase(run)
+
+test "PostgreSQL SQL bindings preserve casts, exact numeric values and query timeouts"
+    if process.env.LANGO_TEST_POSTGRES == null
+        return null
+    run = (address)
+        return chain call(address, {
+            action: "types"
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body.large == "9007199254740993"
+            assert result.body.exact == "12345678901234567890.123456789"
+            assert result.body.literal == ":literal"
+            assert result.body.quoted == ":dollar"
+            return call(address, {
+                action: "sleep"
+                seconds: 2
+            })
+          then(result)
+            capture address
+            assert result.status == 500
+            return call(address, {
+                action: "schema"
+            })
+          then(result)
+            assert result.status == 200
+            return null
+    return withDatabase(run)
+
+
+connectionCount(database)
+    context db = database.scope()
+    try
+        query = SQL
+            select count(*)::integer as total from pg_stat_activity
+            where application_name = 'lango-server'
+        query.execute()
+        query.next()
+        return query.total
+    finally
+        db.finish()
+
+test "PostgreSQL connections and transactions are released after crashes, deadlines and close"
+    if process.env.LANGO_TEST_POSTGRES == null
+        return null
+    root = process.cwd()
+    admin = new Database(databaseOptions(root, provider(), 1), root)
+    return chain admin.open()
+      then(ignored)
+        capture admin
+        baseline = connectionCount(admin)
+        return leakScenario(admin, baseline)
+      finally
+        capture admin
+        admin.close()
+
+leakScenario(admin, baseline)
+    run = (address)
+        return chain call(address, {
+            action: "crash"
+        })
+          then(result)
+            capture address
+            assert result.status == 500
+            return call(address, {
+                action: "schema"
+            })
+          then(result)
+            capture address
+            assert result.status == 200
+            return call(address, {
+                action: "block"
+                id: "terminated"
+                value: "must rollback"
+                amount: "1"
+            })
+          then(result)
+            capture address
+            assert result.status == 504
+            return call(address, {
+                action: "select"
+                id: "terminated"
+            })
+          then(result)
+            assert result.status == 200
+            assert result.body == null
+            return null
+    return chain withDatabase(run, {
+        workers: 1
+        requestTimeoutMs: 250
+    })
+      then(ignored)
+        capture admin
+        capture baseline
+        assert connectionCount(admin) == baseline
+        return null
+
+validationScenario(address, id)
+    service = new Tokens(options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+    }))
+    claims = service.create()
+    claims.iat = claims.iat - 5
+    claims.exp = claims.iat + 900
+    claims.validatedAt = Date/now() - 2000
+    token = service.sign(claims)
+    return chain call(address, {
+        action: "select"
+        id: id
+    }, token, {
+        "x-db-validate": "deny"
+    })
+      then(result)
+        capture address
+        capture token
+        capture id
+        assert result.status == 401
+        return call(address, {
+            action: "select"
+            id: id
+        }, token)
+      then(result)
+        capture address
+        capture id
+        assert result.status == 200
+        return failureScenario(address, id)

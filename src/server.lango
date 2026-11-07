@@ -1,3 +1,5 @@
+import "./database"
+    prepareDatabase(settings)
 import js "node:http" as http
 import js "node:path" as path
 import js "node:module" as modules
@@ -310,6 +312,7 @@ Server:close()
         return @closing
     previous = @state
     @state = "closing"
+    @shutdownDeadline = Date/now() + @definition.settings.shutdownTimeoutMs
     if previous == "new" or previous == "closed"
         @state = "closed"
         @closing = Promise/resolve(null)
@@ -352,7 +355,21 @@ Server:destroyPool()
     @destroying = true
     if @pool == null
         return Promise/resolve(null)
-    return @pool.destroy()
+    pool = @pool
+    pending = Promise/resolve(null)
+    if @definition.settings.database != null and @state == "closing" and @active == 0
+        remaining = @shutdownDeadline - Date/now()
+        if remaining > 0
+            tasks = []
+            for range(@definition.settings.workers) as index
+                tasks.add(pool.run({
+                    close: true
+                }))
+            pending = startupDeadline(Promise/all(tasks), remaining)
+    return chain pending
+      finally
+        capture pool
+        return pool.destroy()
 
 Server:send(res, result)
     if @state == "closing"

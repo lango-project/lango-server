@@ -1,0 +1,7 @@
+{
+  "name": "@lango-example/database",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./dist/handlers.mjs" },
+  "dependencies": { "@lango-project/lango-server": "file:../.." }
+}

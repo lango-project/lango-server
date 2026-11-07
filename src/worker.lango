@@ -1,4 +1,7 @@
 import js "node:worker_threads" as threads
+import js global Promise
+import js global process
+import js global setTimeout
 import "./runtime"
     class Runtime
 
@@ -16,11 +19,25 @@ initialize()
             kind: "ready"
             threadId: threads.threadId
         })
+        registerCleanup()
         return workerHandler()
 
 run(task)
     global runtime
+    if task.close == true
+        runtime.close()
+        pending = new Promise((resolve)
+            setTimeout(resolve, 10)
+        )
+        return pending
     return runtime.handle(task)
 
 workerHandler()
     return run
+
+registerCleanup()
+    process.once("exit", ()
+        global runtime
+        runtime.close()
+    )
+    return null

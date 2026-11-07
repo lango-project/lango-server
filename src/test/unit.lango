@@ -206,3 +206,43 @@ test "JWT verifies signature expiry issuer audience and exact auth memberships"
     assert !token.hasAuth("login")
     original = service.read("Bearer ${signed}")
     assert original.auth == "login, superadmin"
+
+
+test "database configuration is optional, strict and resolves application-relative SQLite paths"
+    config = settings()
+    assert config.database == null
+    root = process.cwd()
+    config = options(root, {
+        key: "01234567890123456789012345678901"
+        database: {
+            type: "sqlite"
+            file: "data/application.sqlite"
+        }
+    })
+    assert config.database.file == path/resolve(root, "data/application.sqlite")
+    bad = ()
+        options(process.cwd(), {
+            key: "01234567890123456789012345678901"
+            database: {
+                type: "sqlite"
+                file: ":memory:"
+            }
+        })
+    expectFailure(bad)
+    dir = fixture()
+    process.env.LANGO_SERVER_TEST_KEY = "01234567890123456789012345678901"
+    try
+        xml = <deploy>
+            <jwt keyEnv="LANGO_SERVER_TEST_KEY"/>
+            <database type="sqlite" file="data/app.sqlite" busyTimeoutMs="250"/>
+        </deploy>
+        fs/writeFileSync(path/join(dir, "deploy.xml"), "${xml}")
+        loaded = deployment(dir)
+        assert loaded.database.type == "sqlite"
+        assert loaded.database.file == path/join(dir, "data/app.sqlite")
+        assert loaded.database.busyTimeoutMs == 250
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })

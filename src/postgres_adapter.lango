@@ -1,0 +1,138 @@
+import js "node:module" as modules
+import js "node:path" as path
+import js "node:worker_threads" as threads
+import js global Reflect
+import js global SharedArrayBuffer
+import js global Int32Array
+import js global Atomics
+import js global Math
+import js global Error
+
+export class PostgresAdapter(mod, settings, root)
+    properties
+        parameterStyle
+    methods
+        execute(sql, parameters)
+        begin()
+        commit()
+        rollback()
+        transactionState()
+        close()
+
+PostgresAdapter(mod, settings, root)
+    @closed = false
+    @broken = false
+    @state = null
+    @depth = 0
+    @rollbackOnly = false
+    @parameterStyle = "postgresql"
+    @timeout = Math/min(2147483647, settings.queryTimeoutMs + 1000)
+    @signal = new Int32Array(new SharedArrayBuffer(4))
+    channel = Reflect/construct(mod.MessageChannel, [])
+    @port = channel.port1
+    resolver = modules/createRequire(path/join(root, "package.json"))
+    entry = resolver.resolve("@lango-project/lango-server")
+    @worker = Reflect/construct(mod.Worker, [path/join(path/dirname(entry), "postgres_worker.mjs"), {
+        workerData: {
+            settings: settings
+            port: channel.port2
+            signal: @signal
+        }
+        transferList: [channel.port2]
+    }])
+    worker = @worker
+    worker.on("error", (error)
+        @broken = true
+    )
+    @worker.unref()
+    @port.unref()
+    try
+        exchange({
+            action: "connect"
+        }, Math/min(2147483647, settings.connectTimeoutSeconds * 1000 + 1000))
+    catch error
+        close()
+        throw new Error("PostgreSQL initialization failed")
+
+PostgresAdapter:exchange(task, timeout)
+    if @closed or @broken
+        throw new Error("PostgreSQL connection is unavailable")
+    Atomics/store(@signal, 0, 0)
+    @port.postMessage(task)
+    waited = Atomics/wait(@signal, 0, 0, timeout)
+    if waited == "timed-out"
+        @broken = true
+        @worker.terminate()
+        throw new Error("PostgreSQL operation timed out")
+    reply = threads/receiveMessageOnPort(@port)
+    if reply == null
+        @broken = true
+        throw new Error("PostgreSQL response was not received")
+    result = reply.message
+    @state = result.state
+    if result.failed
+        @broken = result.dead
+        error = new Error("PostgreSQL query failed")
+        error.code = result.code
+        error.position = result.position
+        error.transactionUnusable = @state == "failed"
+        throw error
+    return result
+
+PostgresAdapter:execute(sql, parameters)
+    return exchange({
+        action: "query"
+        sql: sql
+        parameters: parameters
+    }, @timeout)
+
+PostgresAdapter:begin()
+    if @depth == 0 and @state == null
+        execute("BEGIN", [])
+    @depth = @depth + 1
+    return null
+
+PostgresAdapter:commit()
+    if @depth == 0
+        throw new Error("NoActiveTransaction")
+    if @depth > 1
+        @depth = @depth - 1
+        return null
+    if @rollbackOnly or @state == "failed"
+        rollback()
+        throw new Error("TransactionRolledBack")
+    execute("COMMIT", [])
+    @depth = 0
+    return null
+
+PostgresAdapter:rollback()
+    if @depth > 1
+        @depth = @depth - 1
+        @rollbackOnly = true
+        return null
+    if @state != null
+        execute("ROLLBACK", [])
+    @depth = 0
+    @rollbackOnly = false
+    return null
+
+PostgresAdapter:transactionState()
+    if @broken
+        throw new Error("PostgreSQL connection is unavailable")
+    if @rollbackOnly and @state != "failed"
+        return "rollback_only"
+    return @state
+
+PostgresAdapter:close()
+    if @closed
+        return null
+    try
+        if !@broken
+            exchange({
+                action: "close"
+            }, @timeout)
+    finally
+        @closed = true
+        @port.close()
+        @worker.terminate()
+    return null

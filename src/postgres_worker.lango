@@ -1,0 +1,114 @@
+import js "pg" as pg
+import js "node:worker_threads" as threads
+import js global Atomics
+import js global Math
+import js global Number
+import js global Promise
+
+
+global state = initialState()
+global installed = install()
+
+install()
+    port = threads.workerData.port
+    port.on("message", (task)
+        return chain Promise/resolve(null)
+          then(ignored)
+            capture task
+            return execute(task)
+          then(result)
+            reply(result)
+            return null
+          catch(error)
+            global state
+            if state.transaction != null
+                state.transaction = "failed"
+            if error.code == null or error.code.length != 5 or error.code.startsWith("08")
+                state.dead = true
+            position = null
+            if error.position != null
+                position = Number/parseInt(error.position, 10)
+            reply({
+                failed: true
+                dead: state.dead
+                code: error.code
+                position: position
+                state: state.transaction
+            })
+            return null
+    )
+    return null
+
+execute(task)
+    global state
+    settings = threads.workerData.settings
+    switch task.action
+      case "connect"
+          state.client = new pg/Client({
+              connectionString: settings.connection
+              connectionTimeoutMillis: Math/min(2147483647, settings.connectTimeoutSeconds * 1000)
+              statement_timeout: settings.queryTimeoutMs
+              application_name: "lango-server"
+          })
+          client = state.client
+          client.on("error", (error)
+              global state
+              state.dead = true
+          )
+          return chain client.connect()
+            then(ignored)
+              return success([], null)
+      case "query"
+          return chain state.client.query({
+              text: task.sql
+              values: task.parameters
+              queryMode: "extended"
+          })
+            then(result)
+              global state
+              switch result.command
+                case "BEGIN"
+                    state.transaction = "active"
+                case "COMMIT"
+                case "ROLLBACK"
+                    state.transaction = null
+              changes = null
+              switch result.command
+                case "INSERT"
+                case "UPDATE"
+                case "DELETE"
+                case "MERGE"
+                    changes = result.rowCount
+              return success(result.rows, changes)
+      case "close"
+          return chain state.client.end()
+            then(ignored)
+              return success([], null)
+      else
+          throw "Unknown PostgreSQL operation"
+
+success(rows, changes)
+    global state
+    return {
+        failed: false
+        dead: false
+        state: state.transaction
+        rows: rows
+        changes: changes
+        lastInsertRowid: null
+    }
+
+reply(result)
+    port = threads.workerData.port
+    signal = threads.workerData.signal
+    port.postMessage(result)
+    Atomics/store(signal, 0, 1)
+    Atomics/notify(signal, 0)
+    return null
+
+initialState()
+    return {
+        client: null
+        transaction: null
+        dead: false
+    }

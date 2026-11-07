@@ -3,6 +3,18 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: lango
+          POSTGRES_PASSWORD: lango
+          POSTGRES_DB: lango
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lango -d lango"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -11,3 +23,6 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - run: npm run test:postgres
+        env:
+          LANGO_TEST_POSTGRES: postgresql://lango:lango@127.0.0.1:5432/lango

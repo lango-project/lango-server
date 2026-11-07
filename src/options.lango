@@ -1,3 +1,5 @@
+import "./database_options"
+    databaseOptions(root, spec, workers)
 import js "node:fs" as fs
 import js "node:path" as path
 import js global Object
@@ -35,6 +37,7 @@ options(root, supplied = null)
         keys: {}
         activeKeyId: "current"
         requestEvent: false
+        database: null
     }
     if supplied != null
         for supplied as key: value
@@ -70,6 +73,7 @@ options(root, supplied = null)
             throw "JWT keys must contain at least 32 characters"
     result.keys = keys
     result.key = null
+    result.database = databaseOptions(result.root, result.database, result.workers)
     return result
 
 deployment(directory)
@@ -92,6 +96,10 @@ deployment(directory)
               attributes(tag, ["workers", "maxQueue", "requestTimeoutMs", "startupTimeoutMs", "shutdownTimeoutMs"])
           case "events"
               attributes(tag, ["requestEvent", "eventTimeoutMs"])
+          case "database"
+              attributes(tag, ["type", "file", "connectionEnv", "busyTimeoutMs", "queryTimeoutMs", "connectTimeoutSeconds"])
+              settings.database = tag.attributes()
+              continue
           case "jwt"
               attributes(tag, ["issuer", "audience", "ttlSeconds", "keyEnv", "keysFile", "activeKeyId"])
           else

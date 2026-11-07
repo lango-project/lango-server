@@ -78,7 +78,7 @@ A worker processes one request at a time, including its Promise and events.
 Synchronous work does not block the main HTTP loop. Promise callbacks still use
 Lango's explicit `capture` rules; capture any contexts needed by later callbacks.
 Workers retain their loaded modules between requests. Module-level state is
-worker-local, not shared or client-specific. The server provides no database.
+worker-local, not shared or client-specific. An optional configured SQL database is available through `context db`; application schema and migrations remain application-owned.
 
 ## Routes
 
@@ -305,3 +305,128 @@ curl http://127.0.0.1:3000/demo/echo \
 
 Prepare a publishable archive with `npm pack`. Publishing is a separate release
 step; no package is published by the build or test commands.
+
+
+## SQL database configuration
+
+Database configuration is optional. Configure one database per server through
+`deploy.xml` or the equivalent `Builder.configure({ database: ... })` map:
+
+```xml
+<database type="sqlite" file="data/application.sqlite"/>
+```
+
+```xml
+<database type="postgresql" connectionEnv="APP_DATABASE_URL"/>
+```
+
+SQLite paths resolve against the application directory; missing parent directories
+are created. SQLite uses foreign keys, WAL, and a 5000 ms busy timeout by default.
+WAL initialization happens before workers are started. `busyTimeoutMs` customizes
+lock waiting; it is not a timeout for arbitrary SQLite query execution. `:memory:`
+is allowed only with one worker, since each connection would otherwise get a
+different database. Worker replacement loses in-memory data.
+
+For PostgreSQL, `connectionEnv` names an environment variable containing a
+`postgresql://` or `postgres://` connection URL, including any required SSL options.
+Credentials are resolved at configuration time and are not logged. Defaults are
+`queryTimeoutMs: 5000` (PostgreSQL `statement_timeout`) and
+`connectTimeoutSeconds: 5`. These limits can be set as database attributes or map
+fields. Database startup failures prevent the HTTP listener from opening.
+
+```lango
+builder.configure({
+    database: {
+        type: "postgresql"
+        connectionEnv: "APP_DATABASE_URL"
+        queryTimeoutMs: 5000
+    }
+})
+```
+
+Each request worker owns one persistent connection. The server creates a fresh
+DB scope before Register/Validate and keeps it available to the handler. Request
+gets a separate clean scope after the handler result is serialized. Scopes cannot
+be reused after completion. Physical connections are released on shutdown; worker
+replacement discards the old connection and creates a new one. If DB configuration
+is absent, SQL fails with `DatabaseNotConfigured` instead of borrowing an unrelated
+default adapter.
+
+Application code uses Lango SQL rather than a driver API:
+
+```lango
+findCustomer(input)
+    context db
+    row = SQL
+        select id, name from customer where id = :id
+    row.id = input.id
+    row.execute()
+    if row.next()
+        return {
+            id: row.id
+            name: row.name
+        }
+    return null
+```
+
+**Build all SQL application modules with lango-js 0.1.13 or newer.** SQL and
+`start_trans()`, `commit_trans()`, `rollback_trans()`, `trans_state()` use the active
+db context across separately compiled runtime copies. Promise callbacks that use
+SQL should declare/capture db using the normal context capture rules.
+
+Transactions are explicit. The server never implicitly commits a transaction.
+An open transaction at successful scope completion is rolled back and reported as
+an error; failure paths also roll back before connection reuse. Nested transactions
+join the outer transaction and an inner rollback makes it rollback-only. PostgreSQL
+failed-transaction state remains failed until rollback. A failing Request event
+cannot roll back the already completed handler scope or change its prepared reply.
+Previously committed writes are not undone by later serialization, token, network,
+or event failures. Application-specific transactional guarantees remain explicit.
+
+`:name` bindings are used for both engines. PostgreSQL positional binding conversion
+preserves quotes, comments, dollar strings, and casts. Values are never interpolated
+into SQL. Decimal parameters are exact text; use TEXT storage for exact decimals
+in SQLite because its numeric affinity can convert values to floating point.
+PostgreSQL numeric and int8 results remain strings by default. SQLite integers outside
+the safe JavaScript integer range also return strings. Use SQL `RETURNING` for
+portable generated-ID retrieval. SQL dialects and schema migrations are not translated.
+
+PostgreSQL uses the standard pure JavaScript `pg` driver. A private helper thread
+per request worker handles driver I/O while Lango SQL stays synchronous. This adds
+no public API or worker configuration and requires no libpq headers, native compiler,
+or pg-native installation. Closing or terminating the owner also releases its helper.
+
+The database example uses SQL `RETURNING` and the same handler can run with either
+engine. Its initial table creation is demonstration code; production migrations
+should be managed by the application:
+
+```sh
+npm run build
+npm install --prefix examples/database --ignore-scripts
+export LANGO_JWT_KEY='replace-with-a-random-secret-of-at-least-32-characters'
+node dist/cli/server.mjs examples/database
+```
+
+```sh
+curl http://127.0.0.1:3000/notes/save \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Stored through Lango SQL"}'
+```
+
+`npm test` covers SQLite and a packed consumer with a SQL handler. To run the same
+SQL/transaction suite plus PostgreSQL precision, timeout and connection-cleanup tests:
+
+```sh
+LANGO_TEST_POSTGRES='postgresql://user:password@localhost/database' npm run test:postgres
+```
+
+The tests create the `lango_server_items` table; use a dedicated test database. CI
+runs SQLite first and PostgreSQL against an isolated PostgreSQL service.
+
+### Release order for this change
+
+The server's development compiler dependency is now `^0.1.13`. Publish the prepared
+lango-js 0.1.13 archive before running a fresh registry-based installation or CI,
+then build/publish lango-server and rebuild application SQL modules. Local validation
+uses the exact prepared compiler archive, without npm links; nothing is automatically
+published by these commands.

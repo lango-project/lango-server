@@ -1,0 +1,127 @@
+import js global Error
+import js "node:fs" as fs
+import js "node:path" as path
+import js global Reflect
+import js global Object
+import js global Number
+
+export class SqliteAdapter(mod, settings)
+    properties
+        parameterStyle
+    methods
+        execute(sql, parameters)
+        begin()
+        commit()
+        rollback()
+        transactionState()
+        close()
+
+SqliteAdapter(mod, settings)
+    if settings.file != ":memory:"
+        fs/mkdirSync(path/dirname(settings.file), {
+            recursive: true
+        })
+    @connection = Reflect/construct(mod.DatabaseSync, [settings.file])
+    @depth = 0
+    @state = null
+    @parameterStyle = "named"
+    try
+        @connection.exec("PRAGMA busy_timeout=${settings.busyTimeoutMs}")
+        @connection.exec("PRAGMA foreign_keys=ON")
+        modeQuery = @connection.prepare("PRAGMA journal_mode")
+        mode = modeQuery.get()
+        if settings.file != ":memory:" and mode.journal_mode != "wal"
+            @connection.exec("PRAGMA journal_mode=WAL")
+    catch error
+        @connection.close()
+        throw "SQLite initialization failed"
+
+SqliteAdapter:execute(sql, parameters)
+    bound = {}
+    for parameters as name: value
+        if is_bool(value)
+            bound[name] = Number(value)
+          else
+              bound[name] = value
+    statement = @connection.prepare(sql)
+    statement.setReadBigInts(true)
+    columns = statement.columns()
+    if columns.length > 0
+        records = statement.all(bound)
+        for records as row
+            for row as name: value
+                row[name] = normalizeInteger(value)
+        return {
+            rows: records
+            changes: null
+            lastInsertRowid: null
+        }
+    result = statement.run(bound)
+    changes = null
+    generated = null
+    operation = sql.trim()
+    operation = operation.toLowerCase()
+    if operation.startsWith("insert") or operation.startsWith("update") or operation.startsWith("delete") or operation.startsWith("with")
+        changes = normalizeInteger(result.changes)
+    if operation.startsWith("insert") and changes == 1
+        generated = normalizeInteger(result.lastInsertRowid)
+    return {
+        rows: []
+        changes: changes
+        lastInsertRowid: generated
+    }
+
+SqliteAdapter:begin()
+    if @depth == 0 and !@connection.isTransaction
+        @connection.exec("BEGIN")
+    @depth = @depth + 1
+    if @state == null
+        @state = "active"
+    return null
+
+SqliteAdapter:commit()
+    if @depth == 0
+        throw new Error("NoActiveTransaction")
+    if @depth > 1
+        @depth = @depth - 1
+        return null
+    if @state == "rollback_only"
+        rollback()
+        throw new Error("TransactionRolledBack")
+    @connection.exec("COMMIT")
+    @depth = 0
+    @state = null
+    return null
+
+SqliteAdapter:rollback()
+    if @depth > 1
+        @depth = @depth - 1
+        @state = "rollback_only"
+        return null
+    if @connection.isTransaction
+        @connection.exec("ROLLBACK")
+    @depth = 0
+    @state = null
+    return null
+
+SqliteAdapter:transactionState()
+    if !@connection.isTransaction
+        @depth = 0
+        @state = null
+    if @connection.isTransaction and @state == null
+        return "active"
+    return @state
+
+SqliteAdapter:close()
+    loop while transactionState() != null
+        rollback()
+    @connection.close()
+    return null
+
+normalizeInteger(value)
+    if Object/prototype/toString/call(value) != "[object BigInt]"
+        return value
+    number = Number(value)
+    if Number/isSafeInteger(number)
+        return number
+    return "${value}"

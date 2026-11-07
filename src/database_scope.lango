@@ -1,0 +1,59 @@
+import js global Error
+import js global Object
+import js global process
+
+export class DatabaseScope(adapter)
+    properties
+        parameterStyle
+    methods
+        execute(sql, parameters)
+        begin()
+        commit()
+        rollback()
+        transactionState()
+        finish()
+
+DatabaseScope(adapter)
+    @adapter = adapter
+    @closed = false
+    @parameterStyle = adapter.parameterStyle
+
+DatabaseScope:execute(sql, parameters)
+    requireOpen()
+    return @adapter.execute(sql, parameters)
+
+DatabaseScope:begin()
+    requireOpen()
+    return @adapter.begin()
+
+DatabaseScope:commit()
+    requireOpen()
+    return @adapter.commit()
+
+DatabaseScope:rollback()
+    requireOpen()
+    return @adapter.rollback()
+
+DatabaseScope:transactionState()
+    requireOpen()
+    return @adapter.transactionState()
+
+DatabaseScope:requireOpen()
+    if @closed
+        throw new Error("DatabaseScopeClosed")
+    return null
+
+DatabaseScope:finish()
+    if @closed
+        return false
+    @closed = true
+    dirty = false
+    try
+        loop while @adapter.transactionState() != null
+            dirty = true
+            @adapter.rollback()
+    catch error
+        context log
+        log.err("Database cleanup failed; retiring worker")
+        process.exit(1)
+    return dirty

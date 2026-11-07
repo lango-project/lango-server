@@ -1,0 +1,66 @@
+import js global Promise
+import "./database_scope"
+    class DatabaseScope
+import "./sqlite_adapter"
+    class SqliteAdapter
+import "./postgres_adapter"
+    class PostgresAdapter
+
+export prepareDatabase(settings)
+
+export class Database(settings, root = null)
+    methods
+        open()
+        scope()
+        close()
+
+Database(settings, root = null)
+    @root = root
+    @settings = settings
+    @adapter = null
+
+Database:open()
+    if @settings == null
+        return Promise/resolve(null)
+    name = "node:sqlite"
+    if @settings.type == "postgresql"
+        name = "node:worker_threads"
+    return chain import_module(name)
+      then(mod)
+        if @settings.type == "sqlite"
+            @adapter = new SqliteAdapter(mod, @settings)
+          else
+              @adapter = new PostgresAdapter(mod, @settings, @root)
+        context db = scope()
+        try
+            query = SQL
+                select 1
+            query.execute()
+        finally
+            db.finish()
+        return null
+      catch(error)
+        context log
+        log.err("Database startup failed: ${error}")
+        close()
+        throw "Database startup failed; check configuration, compiler version and driver installation"
+
+Database:scope()
+    if @adapter == null
+        return null
+    return new DatabaseScope(@adapter)
+
+Database:close()
+    if @adapter != null
+        @adapter.close()
+        @adapter = null
+    return null
+
+prepareDatabase(settings)
+    if settings == null or settings.type != "sqlite" or settings.file == ":memory:"
+        return Promise/resolve(null)
+    database = new Database(settings)
+    return chain database.open()
+      finally
+        capture database
+        database.close()

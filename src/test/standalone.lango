@@ -111,7 +111,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         fs/mkdirSync(pkg, {
             recursive: true
         })
-        fs/cpSync(path/join(root, "examples", "application", "dist"), pkg, {
+        fs/cpSync(path/join(root, "examples", "database", "dist"), pkg, {
             recursive: true
         })
         fs/writeFileSync(path/join(pkg, "package.json"), to_json({
@@ -123,13 +123,14 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
             }
         }))
         xml = <routes>
-            <endpoint path="/echo" module="@lango-test/feature" handler="echo" auth="anonymous"/>
+            <endpoint path="/save" module="@lango-test/feature" handler="save" auth="anonymous"/>
         </routes>
         fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
         xml = <routes><include module="@lango-test/feature" path="/mounted"/></routes>
         fs/writeFileSync(path/join(dir, "routes.xml"), "${xml}")
         xml = <deploy>
             <http port="0"/>
+            <database type="sqlite" file="data/app.sqlite"/>
             <workers workers="2"/>
             <jwt keyEnv="LANGO_JWT_KEY"/>
         </deploy>
@@ -144,7 +145,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
       then(server)
         capture state
         state.server = server
-        return fetch("http://127.0.0.1:${state.server.port}/mounted/echo", {
+        return fetch("http://127.0.0.1:${state.server.port}/mounted/save", {
             method: "POST"
             headers: {
                 "Content-Type": "application/json"
@@ -159,6 +160,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         return res.json()
       then(body)
         assert body.message == "installed"
+        assert is_string(body.id)
         return null
       finally
         capture state

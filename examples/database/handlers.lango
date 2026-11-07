@@ -1,0 +1,22 @@
+import js "node:crypto" as crypto
+
+export save(input)
+
+save(input)
+    context db
+    context token
+    schema = SQL
+        create table if not exists notes (id text primary key, message text not null)
+    schema.execute()
+    row = SQL
+        insert into notes (id, message) values (:id, :message)
+        returning id, message
+    row.id = crypto/randomUUID()
+    row.message = input.message
+    row.execute()
+    row.next()
+    return {
+        id: row.id
+        message: row.message
+        clientId: token.clientId
+    }

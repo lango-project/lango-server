@@ -1,0 +1,184 @@
+import js global process
+import js global Promise
+import js global setTimeout
+
+export handle(input)
+export register(input)
+export validate(input)
+export audit(metadata)
+
+global retained = null
+
+handle(input)
+    context db
+    context token
+    global retained
+    switch input.action
+      case "schema"
+          create = SQL
+              create table if not exists lango_server_items (
+                  id text primary key,
+                  value text not null,
+                  amount text
+              )
+          create.execute()
+          return {
+              registered: token.get("databaseReady")
+          }
+      case "insert"
+          start_trans()
+          insert(input)
+          commit_trans()
+          return lookup(input.id)
+      case "unclosed"
+          start_trans()
+          insert(input)
+          return lookup(input.id)
+      case "throw"
+          start_trans()
+          insert(input)
+          throw "Business failure"
+      case "select"
+          return lookup(input.id)
+      case "nested"
+          start_trans()
+          start_trans()
+          rollback_trans()
+          before = trans_state()
+          rolled = false
+          try
+              commit_trans()
+          catch error
+              rolled = true
+          return {
+              before: before
+              rolled: rolled
+              after: trans_state()
+          }
+      case "failed"
+          start_trans()
+          state = null
+          code = null
+          try
+              bad = SQL
+                  select nonexistent_column from lango_server_items
+              bad.execute()
+          catch error
+              state = trans_state()
+              code = error.code
+          rollback_trans()
+          return {
+              state: state
+              code: code
+              after: trans_state()
+          }
+      case "retain"
+          retained = db
+          return true
+      case "stale"
+          try
+              retained.execute("select 1", {})
+          catch error
+              return true
+          return false
+      case "async"
+          pending = new Promise((resolve)
+              capture db
+              capture input
+              done = ()
+                  capture db
+                  capture input
+                  capture resolve
+                  resolve(lookup(input.id))
+              setTimeout(done, 10)
+          )
+          return pending
+      case "crash"
+          process.exit(1)
+          return null
+      case "block"
+          start_trans()
+          insert(input)
+          loop
+              busy = 1
+      case "sleep"
+          sleeping = SQL
+              select pg_sleep(:seconds)
+          sleeping.seconds = input.seconds
+          sleeping.execute()
+          return true
+      case "types"
+          types = SQL
+              select 9007199254740993::bigint as large, :amount::numeric as exact,
+                     ':literal'::text as literal, $$:dollar$$::text as quoted
+          types.amount = $12345678901234567890.123456789
+          types.execute()
+          types.next()
+          return {
+              large: types.large
+              exact: types.exact
+              quoted: types.quoted
+              literal: types.literal
+          }
+      else
+          throw "Unknown database test action"
+
+insert(input)
+    context db
+    statement = SQL
+        insert into lango_server_items (id, value, amount)
+        values (:id, :value, :amount)
+    statement.id = input.id
+    statement.value = input.value
+    statement.amount = $(input.amount)
+    statement.execute()
+    return null
+
+lookup(id)
+    context db
+    query = SQL
+        select id, value, amount from lango_server_items where id = :id
+    query.id = id
+    query.execute()
+    if query.next()
+        return {
+            id: query.id
+            value: query.value
+            amount: query.amount
+        }
+    return null
+
+register(input)
+    context db
+    context token
+    query = SQL
+        select 1 as ready
+    query.execute()
+    query.next()
+    token.set("databaseReady", query.ready)
+    return null
+
+validate(input)
+    context db
+    context request
+    query = SQL
+        select case when :allowed then 1 else 0 end as allowed
+    query.allowed = request.headers["x-db-validate"] != "deny"
+    query.execute()
+    query.next()
+    return query.allowed == 1
+
+audit(metadata)
+    context db
+    if trans_state() != null
+        throw "Handler transaction leaked into Request event"
+    input = from_json(metadata.input)
+    if input.auditId != null
+        if input.auditUnclosed == true
+            start_trans()
+        insert({
+            id: input.auditId
+            value: "audit"
+            amount: "0"
+        })
+    return null

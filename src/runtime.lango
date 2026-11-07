@@ -1,3 +1,5 @@
+import "./database"
+    class Database
 import js global Promise
 import js global JSON
 import js global Object
@@ -14,6 +16,7 @@ export class Runtime(definition)
     methods
         preload()
         handle(task)
+        close()
 
 Runtime(definition)
     @definition = definition
@@ -21,16 +24,24 @@ Runtime(definition)
     @events = {}
     @tokens = new Tokens(definition.settings)
     @modules = {}
+    @database = new Database(definition.settings.database, definition.settings.root)
 
 Runtime:preload()
     definitions = @definition.routes
-    pending = Promise/resolve(null)
+    pending = @database.open()
     for definitions as route
         pending = prepareRoute(pending, route)
     events = @definition.events
     for events as name: target
         pending = prepareEvent(pending, name, target)
-    return pending
+    return chain pending
+      catch(error)
+        close()
+        throw error
+
+Runtime:close()
+    @database.close()
+    return null
 
 Runtime:prepareRoute(pending, route)
     return chain pending
@@ -110,12 +121,14 @@ Runtime:handle(task)
     catch error
         return failure(400, "InvalidJson")
     context token = new Token(claims)
+    context db = @database.scope()
     return chain Promise/resolve(null)
       then(ignored)
         capture request
         capture response
         capture token
         capture log
+        capture db
         capture fresh
         capture input
         if fresh
@@ -126,6 +139,7 @@ Runtime:handle(task)
         capture response
         capture token
         capture log
+        capture db
         capture route
         capture input
         capture claims
@@ -144,11 +158,13 @@ Runtime:handle(task)
         capture response
         capture token
         capture log
+        capture db
         capture task
         capture claims
         body = JSON/stringify(output)
         if !is_string(body)
             throw "Handler result is not JSON serializable"
+        closeScope(db, true)
         result = response.result(body)
         updated = token.snapshot()
         updated.validatedAt = claims.validatedAt
@@ -159,10 +175,15 @@ Runtime:handle(task)
       catch(error)
         capture request
         capture log
+        capture db
+        closeScope(db, false)
         if error == "TokenExpired" or (is_object(error) and error.status == 401)
             return failure(401, "Unauthorized")
         log.err("[${request.id}] Request failed")
         return failure(500, "InternalServerError")
+      finally
+        capture db
+        closeScope(db, false)
 
 Runtime:event(name, input)
     if !(name in @events)
@@ -171,6 +192,7 @@ Runtime:event(name, input)
     context response
     context token
     context log
+    context db
     handler = @events[name]
     threads/parentPort/postMessage({
         kind: "event"
@@ -182,6 +204,7 @@ Runtime:event(name, input)
         capture response
         capture token
         capture log
+        capture db
         capture handler
         capture input
         return handler(input)
@@ -194,6 +217,7 @@ Runtime:event(name, input)
         })
 
 Runtime:validate()
+    context db
     context token
     context response
     context request
@@ -209,6 +233,7 @@ Runtime:validate()
         capture response
         capture request
         capture log
+        capture db
         return event("validate", null)
       then(valid)
         capture token
@@ -227,6 +252,7 @@ Runtime:validate()
         return claims.validatedAt
 
 Runtime:audit(id, result, input, output, claims)
+    context db = @database.scope()
     context request
     context log
     context token = new Token(claims, true)
@@ -247,15 +273,25 @@ Runtime:audit(id, result, input, output, claims)
         capture request
         capture response
         capture log
+        capture db
         capture metadata
         return event("request", Object/freeze(metadata))
+      then(ignored)
+        capture db
+        closeScope(db, true)
+        return null
       catch(error)
         capture log
+        capture db
+        closeScope(db, false)
         log.err("Request event failed")
         return null
       then(ignored)
         capture result
         return result
+      finally
+        capture db
+        closeScope(db, false)
 
 failure(status, code)
     headers = {
@@ -274,4 +310,11 @@ failure(status, code)
 
 stampValidation(claims, validatedAt)
     claims.validatedAt = validatedAt
+    return null
+
+closeScope(db, strict)
+    if db != null
+        dirty = db.finish()
+        if dirty and strict
+            throw "UnclosedTransaction"
     return null
