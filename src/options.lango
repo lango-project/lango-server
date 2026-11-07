@@ -1,0 +1,120 @@
+import js "node:fs" as fs
+import js "node:path" as path
+import js global Object
+import js global Number
+import js global process
+
+export contains(items, value)
+export options(root, supplied = null)
+export deployment(directory)
+export attributes(tag, allowed)
+
+attributes(tag, allowed)
+    for tag.attributes() as key: value
+        if !allowed.includes(key)
+            throw "Unknown ${tag.tag()} attribute: ${key}"
+    return null
+
+options(root, supplied = null)
+    result = {
+        root: path/resolve(root)
+        host: "127.0.0.1"
+        port: 3000
+        workers: 2
+        maxQueue: 64
+        bodyLimit: 1048576
+        bodyTimeoutMs: 30000
+        requestTimeoutMs: 30000
+        eventTimeoutMs: 5000
+        startupTimeoutMs: 30000
+        shutdownTimeoutMs: 30000
+        issuer: "lango-server"
+        audience: "lango-client"
+        ttlSeconds: 900
+        key: null
+        keys: {}
+        activeKeyId: "current"
+        requestEvent: false
+    }
+    if supplied != null
+        for supplied as key: value
+            if !Object/hasOwn(result, key) or key == "root"
+                throw "Unknown server option: ${key}"
+            result[key] = value
+    if !is_string(result.host) or result.host == ""
+        throw "Host must be a nonempty string"
+    for ["port", "workers", "maxQueue", "bodyLimit", "bodyTimeoutMs", "requestTimeoutMs", "eventTimeoutMs", "startupTimeoutMs", "shutdownTimeoutMs", "ttlSeconds"] as key
+        value = result[key]
+        if !is_number(value) or !Number/isSafeInteger(value) or value < 0
+            throw "Invalid server option: ${key}"
+        if key != "port" and key != "maxQueue" and value == 0
+            throw "Server option must be positive: ${key}"
+        if key.endsWith("Ms") and value > 2147483647
+            throw "Timeout exceeds timer limit: ${key}"
+    if result.port > 65535 or result.workers > 128 or result.ttlSeconds > 86400
+        throw "Server option exceeds supported limit"
+    if !is_bool(result.requestEvent)
+        throw "requestEvent must be boolean"
+    for ["issuer", "audience", "activeKeyId"] as key
+        if !is_string(result[key]) or result[key] == ""
+            throw "Missing JWT option: ${key}"
+    if !is_object(result.keys) or is_array(result.keys)
+        throw "JWT keys must be a map"
+    keys = Object/assign(Object/create(null), result.keys)
+    if result.key != null
+        keys[result.activeKeyId] = result.key
+    if !Object/hasOwn(keys, result.activeKeyId)
+        throw "JWT signing key is required"
+    for keys as id: secret
+        if !is_string(secret) or secret.length < 32
+            throw "JWT keys must contain at least 32 characters"
+    result.keys = keys
+    result.key = null
+    return result
+
+deployment(directory)
+    file = path/join(directory, "deploy.xml")
+    root = xml2obj(fs/readFileSync(file, "utf8"))
+    if root.tag() != "deploy"
+        throw "Expected deploy root"
+    attributes(root, [])
+    settings = {}
+    seen = []
+    for root.children() as tag
+        name = tag.tag()
+        if seen.includes(name) or tag.children().length != 0 or tag.innerText().trim() != ""
+            throw "Duplicate or nonempty deployment section: ${name}"
+        seen.add(name)
+        switch name
+          case "http"
+              attributes(tag, ["host", "port", "bodyLimit", "bodyTimeoutMs"])
+          case "workers"
+              attributes(tag, ["workers", "maxQueue", "requestTimeoutMs", "startupTimeoutMs", "shutdownTimeoutMs"])
+          case "events"
+              attributes(tag, ["requestEvent", "eventTimeoutMs"])
+          case "jwt"
+              attributes(tag, ["issuer", "audience", "ttlSeconds", "keyEnv", "keysFile", "activeKeyId"])
+          else
+              throw "Unknown deployment section: ${name}"
+        for tag.attributes() as key: value
+            if key == "keyEnv"
+                settings.key = process.env[value]
+                if settings.key == null
+                    throw "JWT key environment variable is missing: ${value}"
+              else
+                  if key == "keysFile"
+                      settings.keys = from_json(fs/readFileSync(path/resolve(directory, value), "utf8"))
+                    else
+                        if contains(["host", "issuer", "audience", "activeKeyId"], key)
+                            settings[key] = value
+                          else
+                              if key == "requestEvent"
+                                  if value != "true" and value != "false"
+                                      throw "requestEvent must be true or false"
+                                  settings[key] = value == "true"
+                                else
+                                    settings[key] = Number(value)
+    return options(directory, settings)
+
+contains(items, value)
+    return items.includes(value)

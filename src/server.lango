@@ -1,0 +1,415 @@
+import js "node:http" as http
+import js "node:path" as path
+import js "node:module" as modules
+import js "node:crypto" as crypto
+import js "piscina" as piscina
+import js global process
+import js global Promise
+import js global Date
+import js global Math
+import js global Object
+import js global Reflect
+import js global AbortController
+import js global setTimeout
+import js global clearTimeout
+import "./options"
+    deployment(directory)
+import "./routes"
+    class Routes
+import "./body_reader"
+    class BodyReader
+
+export main(args)
+
+export class Server(path, definition = null)
+    methods
+        start()
+        close()
+
+Server(path, definition = null)
+    if path != null
+        directory = path
+        routes = new Routes(directory)
+        routes.xml(pathJoin(directory, "routes.xml"))
+        definition = {
+            settings: deployment(directory)
+            routes: routes.definitions()
+            events: routes.events()
+        }
+    if definition == null
+        throw "Use Server(directory) or Builder.build()"
+    @definition = from_json(to_json(definition))
+    @state = "new"
+    @server = null
+    @pool = null
+    @starting = null
+    @closing = null
+    @waiting = []
+    @active = 0
+    @tasks = Object/create(null)
+    @ready = Promise/withResolvers()
+    @readyIds = []
+    @destroying = false
+
+pathJoin(directory, file)
+    return path/join(directory, file)
+
+Server:start()
+    if @state != "new"
+        return Promise/reject("Server can only be started once")
+    @state = "starting"
+    @starting = launch()
+    return @starting
+
+Server:launch()
+    settings = @definition.settings
+    return chain Promise/resolve(null)
+      then(ignored)
+        capture path
+        capture modules
+        capture settings
+        resolver = modules/createRequire(path/join(settings.root, "package.json"))
+        entry = resolver.resolve("@lango-project/lango-server")
+        @pool = new piscina/Piscina({
+            filename: path/join(path/dirname(entry), "worker.mjs")
+            name: "execute"
+            minThreads: settings.workers
+            maxThreads: settings.workers
+            maxQueue: settings.maxQueue
+            concurrentTasksPerWorker: 1
+            closeTimeout: settings.shutdownTimeoutMs
+            workerData: @definition
+        })
+        pool = @pool
+        pool.on("message", (message)
+            messageReceived(message)
+        )
+        pool.on("error", (error)
+            @ready.reject(error)
+            context log
+            log.err("Worker pool error")
+        )
+        return startupDeadline(@ready.promise, settings.startupTimeoutMs)
+      then(ignored)
+        capture settings
+        if @state != "starting"
+            throw "Server closed during startup"
+        server = new http/Server((req, res)
+            receive(req, res)
+        )
+        @server = server
+        server.headersTimeout = settings.bodyTimeoutMs
+        server.requestTimeout = settings.bodyTimeoutMs
+        listening = new Promise((resolve, reject)
+            capture server
+            capture settings
+            server.once("error", reject)
+            server.listen(settings.port, settings.host, ()
+                capture server
+                capture resolve
+                capture reject
+                server.removeListener("error", reject)
+                if @state != "starting"
+                    reject("Server closed during startup")
+                    return null
+                @state = "running"
+                address = server.address()
+                resolve({
+                    host: address.address
+                    port: address.port
+                })
+            )
+        )
+        return listening
+      catch(error)
+        @state = "closed"
+        return chain destroyPool()
+          then(ignored)
+            capture error
+            throw error
+
+startupDeadline(pending, timeout)
+    expired = Promise/withResolvers()
+    expire = ()
+        capture expired
+        expired.reject("Worker startup timed out")
+    timer = setTimeout(expire, timeout)
+    return chain Promise/race([pending, expired.promise])
+      finally
+        capture timer
+        clearTimeout(timer)
+
+Server:messageReceived(message)
+    if message.kind == "ready"
+        if !@readyIds.includes(message.threadId)
+            @readyIds.add(message.threadId)
+        if @readyIds.length >= @definition.settings.workers
+            @ready.resolve(null)
+        return null
+    if !(message.id in @tasks)
+        return null
+    record = @tasks[message.id]
+    if message.kind == "prepared"
+        record.result = message.result
+        resetDeadline(record, @definition.settings.eventTimeoutMs)
+    if message.kind == "event"
+        resetDeadline(record, @definition.settings.eventTimeoutMs)
+    if message.kind == "handler" and record.result == null
+        resetDeadline(record, record.deadline - Date/now())
+    return null
+
+Server:resetDeadline(record, duration)
+    clearTimeout(record.timer)
+    if record.result == null
+        duration = Math/min(duration, record.deadline - Date/now())
+    expired = ()
+        capture record
+        expire(record)
+    record.timer = setTimeout(expired, Math/max(1, duration))
+    return null
+
+Server:receive(req, res)
+    req.on("error", (error)
+        return null
+    )
+    if @state != "running"
+        return rejectHttp(req, res, 503, "Unavailable")
+    if req.method != "POST"
+        res.setHeader("Allow", "POST")
+        return rejectHttp(req, res, 405, "MethodNotAllowed")
+    if req.url.includes("?") or req.url.includes("#") or req.url.includes("\\")
+        return rejectHttp(req, res, 400, "InvalidPath")
+    type = req.headers["content-type"]
+    media = ""
+    if is_string(type)
+        parts = type.split(";")
+        media = parts[0].trim()
+    if media.toLowerCase() != "application/json"
+        return rejectHttp(req, res, 415, "JsonRequired")
+    settings = @definition.settings
+    if @active >= settings.workers and @waiting.length >= settings.maxQueue
+        return rejectHttp(req, res, 503, "QueueFull")
+    complete = (body)
+        capture req
+        capture res
+        submit(req, res, body)
+    failed = (status, code)
+        capture res
+        send(res, failure(status, code))
+    reader = new BodyReader(req, res, settings, complete, failed)
+    reader.start()
+    return null
+
+Server:submit(req, res, body)
+    settings = @definition.settings
+    if @state != "running" or (@active >= settings.workers and @waiting.length >= settings.maxQueue)
+        return send(res, failure(503, "Unavailable"))
+    id = crypto/randomUUID()
+    record = {
+        id: id
+        task: {
+            body: body
+            request: {
+                id: id
+                method: req.method
+                path: req.url
+                headers: req.headers
+                remoteAddress: req.socket.remoteAddress
+            }
+        }
+        completed: Promise/withResolvers()
+        controller: new AbortController()
+        started: false
+        result: null
+        expired: false
+        deadline: Date/now() + settings.requestTimeoutMs
+        timer: null
+    }
+    @tasks[id] = record
+    resetDeadline(record, settings.requestTimeoutMs)
+    @waiting.add(record)
+    res.once("close", ()
+        capture res
+        capture record
+        if !res.writableEnded
+            cancel(record)
+    )
+    pump()
+    return chain record.completed.promise
+      then(result)
+        capture res
+        send(res, result)
+        return null
+      catch(error)
+        capture res
+        capture record
+        code = 500
+        name = "InternalServerError"
+        if record.expired
+            code = 504
+            name = "RequestTimeout"
+        send(res, failure(code, name))
+        return null
+
+Server:expire(record)
+    record.expired = true
+    cancel(record)
+    return null
+
+Server:cancel(record)
+    if !(record.id in @tasks)
+        return null
+    if record.started
+        record.controller.abort()
+      else
+          index = @waiting.indexOf(record)
+          if index >= 0
+              @waiting.splice(index, 1)
+          finish(record, null, "Request cancelled")
+    return null
+
+Server:pump()
+    loop while !@destroying and @waiting.length > 0 and @active < @definition.settings.workers
+        record = @waiting.shift()
+        record.started = true
+        @active = @active + 1
+        pending = @pool.run(record.task, {
+            signal: record.controller.signal
+        })
+        settle(record, pending)
+    return null
+
+Server:settle(record, pending)
+    return chain pending
+      then(result)
+        capture record
+        finish(record, result, null)
+        return null
+      catch(error)
+        capture record
+        if record.result != null
+            context log
+            log.err("[${record.id}] Request event interrupted; preserving prepared result")
+        finish(record, record.result, error)
+        return null
+      finally
+        @active = @active - 1
+        pump()
+
+Server:finish(record, result, error)
+    clearTimeout(record.timer)
+    Reflect/deleteProperty(@tasks, record.id)
+    if result != null
+        record.completed.resolve(result)
+      else
+          record.completed.reject(error)
+    return null
+
+Server:close()
+    if @closing != null
+        return @closing
+    previous = @state
+    @state = "closing"
+    if previous == "new" or previous == "closed"
+        @state = "closed"
+        @closing = Promise/resolve(null)
+        return @closing
+    @ready.reject("Server closed during startup")
+    @closing = stop()
+    return @closing
+
+Server:stop()
+    drained = new Promise((resolve)
+        server = @server
+        if server == null or !server.listening
+            resolve(null)
+          else
+              server.close(()
+                  capture resolve
+                  resolve(null)
+              )
+    )
+    expired = Promise/withResolvers()
+    force = ()
+        capture expired
+        @destroying = true
+        for @waiting as record
+            finish(record, null, "Server closed")
+        @waiting = []
+        if @server != null
+            @server.closeAllConnections()
+        expired.reject("Server shutdown timed out")
+    timer = setTimeout(force, @definition.settings.shutdownTimeoutMs)
+    return chain Promise/race([drained, expired.promise])
+      finally
+        capture timer
+        clearTimeout(timer)
+        return destroyPool()
+      finally
+        @state = "closed"
+
+Server:destroyPool()
+    @destroying = true
+    if @pool == null
+        return Promise/resolve(null)
+    return @pool.destroy()
+
+Server:send(res, result)
+    if @state == "closing"
+        result.headers.connection = "close"
+    return write(res, result)
+
+failure(status, code)
+    return {
+        status: status
+        headers: {
+            "content-type": "application/json; charset=utf-8"
+            "cache-control": "no-store"
+        }
+        body: to_json({
+            error: code
+        })
+    }
+
+write(res, result)
+    if res.destroyed or res.writableEnded
+        return null
+    try
+        res.writeHead(result.status, result.headers)
+        res.end(result.body)
+    catch error
+        res.destroy()
+    return null
+
+rejectHttp(req, res, status, code)
+    res.setHeader("Connection", "close")
+    res.once("finish", ()
+        capture req
+        req.destroy()
+    )
+    req.resume()
+    return write(res, failure(status, code))
+
+main(args)
+    if args.length != 1
+        throw "Usage: lango-server <application-directory>"
+    server = new Server(args[0])
+    stop = ()
+        capture server
+        return chain server.close()
+          catch(error)
+            context log
+            log.err("Server shutdown failed")
+            process.exitCode = 1
+    process.once("SIGTERM", stop)
+    process.once("SIGINT", stop)
+    return chain server.start()
+      then(address)
+        context log
+        log.info("Listening on ${address.host}:${address.port}")
+        return null
+      catch(error)
+        capture stop
+        process.removeListener("SIGTERM", stop)
+        process.removeListener("SIGINT", stop)
+        throw error

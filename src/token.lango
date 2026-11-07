@@ -1,0 +1,70 @@
+import "./options"
+    contains(items, value)
+import js global Object
+
+export class Token(claims, readonly = false)
+    properties
+        clientId
+        auth
+        expiresAt
+    methods
+        AddAuth(permission)
+        clearAuth()
+        hasAuth(permission)
+        get(name)
+        set(name, value)
+        snapshot()
+
+Token(claims, readonly = false)
+    @claims = from_json(to_json(claims))
+    @readonly = readonly
+    @clientId = claims.clientId
+    @auth = claims.auth
+    @expiresAt = claims.exp
+
+Token:AddAuth(permission)
+    writable()
+    if !is_string(permission) or permission.trim() == "" or permission.includes(",")
+        throw "Permission must be a nonempty name without commas"
+    permission = permission.trim()
+    if !hasAuth(permission)
+        if @auth == ""
+            @auth = permission
+          else
+              @auth = "${@auth}, ${permission}"
+    return @this
+
+Token:clearAuth()
+    writable()
+    @auth = ""
+    return @this
+
+Token:hasAuth(permission)
+    for @auth.split(",") as name
+        if name.trim() == permission
+            return true
+    return false
+
+Token:get(name)
+    if !Object/hasOwn(@claims, name)
+        return null
+    return from_json(to_json(@claims[name]))
+
+Token:set(name, value)
+    writable()
+    if contains(["clientId", "auth", "iat", "exp", "iss", "aud", "validatedAt", "nbf", "__proto__", "constructor", "prototype"], name)
+        throw "Reserved token field: ${name}"
+    @claims[name] = from_json(to_json(value))
+    return @this
+
+Token:snapshot()
+    claims = from_json(to_json(@claims))
+    if @clientId != claims.clientId or @expiresAt != claims.exp or !is_string(@auth)
+        throw "Token identity and expiry cannot be changed"
+    claims.auth = @auth
+    return claims
+
+Token:writable()
+    if @readonly
+        throw "Token is read-only during this event"
+    return null

@@ -1,0 +1,12 @@
+export class Payload(value)
+    methods
+        toJSON()
+
+Payload(value)
+    @value = value
+
+Payload:toJSON()
+    return {
+        wrapped: @value
+    }
+

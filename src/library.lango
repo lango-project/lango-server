@@ -1,0 +1,10 @@
+import "./server"
+    alias ServerClass = class Server
+import "./builder"
+    alias BuilderClass = class Builder
+
+export global Server
+export global Builder
+
+global Server = ServerClass
+global Builder = BuilderClass

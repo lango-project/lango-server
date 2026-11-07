@@ -1,0 +1,5 @@
+<routes>
+    <group path="/demo" module="@lango-example/application" auth="anonymous">
+        <endpoint path="/echo" handler="echo"/>
+    </group>
+</routes>

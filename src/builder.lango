@@ -1,0 +1,53 @@
+import js "node:path" as path
+import js global process
+import "./routes"
+    class Routes
+import "./group"
+    class Group
+import "./options"
+    options(root, supplied = null)
+import "./server"
+    class Server
+
+export class Builder(root = null)
+    methods
+        configure(settings)
+        endpoint(spec)
+        group(spec)
+        include(spec)
+        event(spec)
+        build()
+
+Builder(root = null)
+    if root == null
+        root = process.cwd()
+    @root = path/resolve(root)
+    @settings = {}
+    @routes = new Routes(@root)
+
+Builder:configure(settings)
+    for settings as key: value
+        @settings[key] = value
+    return @this
+
+Builder:endpoint(spec)
+    @routes.endpoint(spec)
+    return @this
+
+Builder:group(spec)
+    return new Group(@routes, spec)
+
+Builder:include(spec)
+    @routes.include(spec)
+    return @this
+
+Builder:event(spec)
+    @routes.event(spec)
+    return @this
+
+Builder:build()
+    return new Server(null, {
+        settings: options(@root, @settings)
+        routes: @routes.definitions()
+        events: @routes.events()
+    })

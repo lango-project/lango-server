@@ -1,0 +1,277 @@
+import js global Promise
+import js global JSON
+import js global Object
+import js global Date
+import js "node:worker_threads" as threads
+import "./token"
+    class Token
+import "./tokens"
+    class Tokens
+import "./response"
+    class Response
+
+export class Runtime(definition)
+    methods
+        preload()
+        handle(task)
+
+Runtime(definition)
+    @definition = definition
+    @routes = []
+    @events = {}
+    @tokens = new Tokens(definition.settings)
+    @modules = {}
+
+Runtime:preload()
+    definitions = @definition.routes
+    pending = Promise/resolve(null)
+    for definitions as route
+        pending = prepareRoute(pending, route)
+    events = @definition.events
+    for events as name: target
+        pending = prepareEvent(pending, name, target)
+    return pending
+
+Runtime:prepareRoute(pending, route)
+    return chain pending
+      then(ignored)
+        capture route
+        return target(route)
+      then(handler)
+        capture route
+        @routes.add({
+            path: route.path
+            auth: route.auth
+            handler: handler
+        })
+        return null
+
+Runtime:prepareEvent(pending, name, spec)
+    return chain pending
+      then(ignored)
+        capture spec
+        return target(spec)
+      then(handler)
+        capture name
+        @events[name] = handler
+        return null
+
+Runtime:target(spec)
+    file = spec.module
+    if file in @modules
+        return Promise/resolve(exported(@modules[file], spec.handler))
+    return chain import_module(file)
+      then(mod)
+        capture file
+        capture spec
+        @modules[file] = mod
+        return exported(mod, spec.handler)
+
+exported(mod, name)
+    if !Object/hasOwn(mod, name) or !is_kindof(mod[name], Function)
+        throw "Handler is not exported: ${name}"
+    return mod[name]
+
+Runtime:match(path)
+    best = null
+    length = -1
+    for @routes as route
+        if route.path == path
+            return route
+        if route.path.endsWith("/*")
+            prefix = route.path.slice(0, -1)
+            if path.startsWith(prefix) and prefix.length > length
+                best = route
+                length = prefix.length
+    return best
+
+Runtime:handle(task)
+    Object/freeze(task.request.headers)
+    context request = Object/freeze(task.request)
+    context response = new Response()
+    context log
+    fresh = request.headers.authorization == null
+    claims = null
+    try
+        if fresh
+            claims = @tokens.create()
+          else
+              claims = @tokens.read(request.headers.authorization)
+    catch error
+        return failure(401, "Unauthorized")
+    route = match(request.path)
+    if route == null
+        return failure(404, "RouteNotFound")
+    input = null
+    try
+        input = JSON/parse(task.body)
+        if !is_object(input) or is_array(input)
+            return failure(400, "InputMustBeObject")
+    catch error
+        return failure(400, "InvalidJson")
+    context token = new Token(claims)
+    return chain Promise/resolve(null)
+      then(ignored)
+        capture request
+        capture response
+        capture token
+        capture log
+        capture fresh
+        capture input
+        if fresh
+            return event("register", input)
+        return validate()
+      then(validatedAt)
+        capture request
+        capture response
+        capture token
+        capture log
+        capture route
+        capture input
+        capture claims
+        capture fresh
+        if !fresh and is_number(validatedAt)
+            stampValidation(claims, validatedAt)
+        if route.auth != "anonymous" and !token.hasAuth(route.auth)
+            throw {
+                status: 401
+                error: "Unauthorized"
+            }
+        handler = route.handler
+        return handler(input)
+      then(output)
+        capture request
+        capture response
+        capture token
+        capture log
+        capture task
+        capture claims
+        body = JSON/stringify(output)
+        if !is_string(body)
+            throw "Handler result is not JSON serializable"
+        result = response.result(body)
+        updated = token.snapshot()
+        updated.validatedAt = claims.validatedAt
+        result.headers["x-lango-token"] = @tokens.sign(updated)
+        if @definition.settings.requestEvent and "request" in @events
+            return audit(request.id, result, task.body, body, updated)
+        return result
+      catch(error)
+        capture request
+        capture log
+        if error == "TokenExpired" or (is_object(error) and error.status == 401)
+            return failure(401, "Unauthorized")
+        log.err("[${request.id}] Request failed")
+        return failure(500, "InternalServerError")
+
+Runtime:event(name, input)
+    if !(name in @events)
+        return null
+    context request
+    context response
+    context token
+    context log
+    handler = @events[name]
+    threads/parentPort/postMessage({
+        kind: "event"
+        id: request.id
+    })
+    return chain Promise/resolve(null)
+      then(ignored)
+        capture request
+        capture response
+        capture token
+        capture log
+        capture handler
+        capture input
+        return handler(input)
+      finally
+        capture request
+        capture threads
+        threads/parentPort/postMessage({
+            kind: "handler"
+            id: request.id
+        })
+
+Runtime:validate()
+    context token
+    context response
+    context request
+    context log
+    claims = token.snapshot()
+    if !("validate" in @events) or Date/now() - claims.validatedAt < 1000
+        return null
+    original = JSON/stringify(claims)
+    context token = new Token(claims, true)
+    return chain Promise/resolve(null)
+      then(ignored)
+        capture token
+        capture response
+        capture request
+        capture log
+        return event("validate", null)
+      then(valid)
+        capture token
+        capture original
+        capture claims
+        if !is_bool(valid)
+            throw "Validate must return boolean"
+        if !valid
+            throw {
+                status: 401
+                error: "Unauthorized"
+            }
+        if JSON/stringify(token.snapshot()) != original
+            throw "Validate cannot change the token"
+        claims.validatedAt = Date/now()
+        return claims.validatedAt
+
+Runtime:audit(id, result, input, output, claims)
+    context request
+    context log
+    context token = new Token(claims, true)
+    context response = Object/freeze({})
+    metadata = {
+        input: input
+        output: output
+        status: result.status
+    }
+    threads/parentPort/postMessage({
+        kind: "prepared"
+        id: id
+        result: result
+    })
+    return chain Promise/resolve(null)
+      then(ignored)
+        capture token
+        capture request
+        capture response
+        capture log
+        capture metadata
+        return event("request", Object/freeze(metadata))
+      catch(error)
+        capture log
+        log.err("Request event failed")
+        return null
+      then(ignored)
+        capture result
+        return result
+
+failure(status, code)
+    headers = {
+        "content-type": "application/json; charset=utf-8"
+        "cache-control": "no-store"
+    }
+    if status == 401
+        headers["www-authenticate"] = "Bearer"
+    return {
+        status: status
+        headers: headers
+        body: JSON/stringify({
+            error: code
+        })
+    }
+
+stampValidation(claims, validatedAt)
+    claims.validatedAt = validatedAt
+    return null

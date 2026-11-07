@@ -1,0 +1,146 @@
+import "./payload"
+    class Payload
+import js "node:fs" as fs
+import js "node:worker_threads" as threads
+import js global process
+import js global Promise
+import js global Date
+import js global setTimeout
+
+export echo(input)
+export login(input)
+export logout(input)
+export fail(input)
+export validate(input)
+export register(input)
+export audit(input)
+export pause(input)
+export crash(input)
+export circular(input)
+export serialized(input)
+
+
+echo(input)
+    context request
+    context token
+    context response
+    context log
+    if input.status != null
+        response.status(input.status)
+    response.header("X-Example", "yes")
+    return {
+        value: input.value
+        path: request.path
+        clientId: token.clientId
+        auth: token.auth
+        threadId: threads.threadId
+        registered: token.get("registered")
+    }
+
+login(input)
+    context token
+    token.AddAuth("login")
+    if input.admin == true
+        token.AddAuth("admin")
+    return echo(input)
+
+logout(input)
+    context token
+    token.clearAuth()
+    return echo(input)
+
+fail(input)
+    context token
+    token.AddAuth("admin")
+    throw "Private failure detail"
+
+register(input)
+    context request
+    context token
+    token.set("registered", true)
+    if request.headers["x-register"] == "fail"
+        throw "Registration failed"
+    return null
+
+validate(input)
+    context request
+    context token
+    record("validate")
+    switch request.headers["x-validate"]
+      case "false"
+          return false
+      case "error"
+          throw "Database unavailable"
+      case "mutate"
+          token.auth = "admin"
+          return true
+      case "hang"
+          return pause({
+              ms: 2000
+          })
+      case "block"
+          loop
+              value = 1
+      else
+          return true
+
+audit(input)
+    context request
+    record(input)
+    if request.headers["x-audit"] == "error"
+        throw "Audit failed"
+    if request.headers["x-audit"] == "block"
+        loop
+            value = 1
+    if request.headers["x-audit"] == "hang"
+        return pause({
+            ms: 2000
+        })
+    return null
+
+record(value)
+    context request
+    file = request.headers["x-record"]
+    if file != null
+        fs/appendFileSync(file, "${to_json(value)}\n")
+    return null
+
+pause(input)
+    context request
+    context response
+    context token
+    context log
+    if input.block == true
+        end = Date/now() + input.ms
+        loop while Date/now() < end
+            value = 1
+        return echo(input)
+    pending = new Promise((resolve)
+        capture input
+        capture request
+        capture response
+        capture token
+        capture log
+        done = ()
+            capture resolve
+            capture input
+            capture request
+            capture response
+            capture token
+            capture log
+            resolve(echo(input))
+        setTimeout(done, input.ms)
+    )
+    return pending
+
+crash(input)
+    process.exit(1)
+    return null
+
+circular(input)
+    value = {}
+    value.self = value
+    return value
+
+serialized(input)
+    return new Payload(input.value)

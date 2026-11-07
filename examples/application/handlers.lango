@@ -1,0 +1,8 @@
+export echo(input)
+
+echo(input)
+    context token
+    return {
+        message: input.message
+        clientId: token.clientId
+    }

@@ -1,0 +1,598 @@
+import js "node:http" as http
+import js "@lango-project/lango-server" as api
+import js "node:path" as path
+import js "node:fs" as fs
+import js "node:assert/strict" as check
+import js global Object
+import js global Promise
+import js global process
+import js global fetch
+import js global Date
+import js global setTimeout
+import "../options"
+    options(root, supplied = null)
+import "../tokens"
+    class Tokens
+
+withServer(extra, run)
+    builder = new api/Builder(process.cwd())
+    settings = {
+        port: 0
+        key: "01234567890123456789012345678901"
+        workers: 1
+        eventTimeoutMs: 150
+        requestTimeoutMs: 2000
+        shutdownTimeoutMs: 1000
+    }
+    Object/assign(settings, extra)
+    builder.configure(settings)
+    module = path/resolve(".test-output/handlers.mjs")
+    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized"] as name
+        builder.endpoint({
+            path: "/${name}"
+            module: module
+            handler: name
+            auth: "anonymous"
+        })
+    for ["login", "admin"] as permission
+        builder.endpoint({
+            path: "/${permission}/private"
+            module: module
+            handler: "echo"
+            auth: permission
+        })
+    builder.endpoint({
+        path: "/wild/*"
+        module: module
+        handler: "echo"
+        auth: "anonymous"
+    })
+    builder.endpoint({
+        path: "/wild/exact"
+        module: module
+        handler: "serialized"
+        auth: "anonymous"
+    })
+    for ["register", "validate", "request"] as name
+        handler = name
+        if name == "request"
+            handler = "audit"
+        builder.event({
+            name: name
+            module: module
+            handler: handler
+        })
+    server = builder.build()
+    return chain server.start()
+      then(address)
+        capture run
+        capture server
+        address.server = server
+        return run(address)
+      finally
+        capture server
+        return server.close()
+
+call(address, endpoint, input = null, token = null, extra = null)
+    if input == null
+        input = {}
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if token != null
+        headers.Authorization = "Bearer ${token}"
+    if extra != null
+        Object/assign(headers, extra)
+    body = input
+    if !is_string(body)
+        body = to_json(input)
+    return chain fetch("http://127.0.0.1:${address.port}${endpoint}", {
+        method: "POST"
+        headers: headers
+        body: body
+    })
+      then(res)
+        return chain res.json()
+          then(body)
+            capture res
+            return {
+                status: res.status
+                body: body
+                token: res.headers.get("x-lango-token")
+                marker: res.headers.get("x-example")
+            }
+
+staleToken()
+    config = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+    })
+    service = new Tokens(config)
+    claims = service.create()
+    claims.iat = claims.iat - 5
+    claims.exp = claims.iat + config.ttlSeconds
+    claims.validatedAt = Date/now() - 2000
+    return service.sign(claims)
+
+wait(ms)
+    pending = new Promise((resolve)
+        capture ms
+        setTimeout(resolve, ms)
+    )
+    return pending
+
+test "public package exports only Server and Builder"
+    keys = Object/keys(api)
+    keys.sort()
+    check/deepStrictEqual(keys, ["Builder", "Server"])
+
+test "HTTP handler runs in a worker with contexts, registration, headers and JSON"
+    run = (address)
+        return chain call(address, "/echo", {
+            value: "hello"
+            status: 201
+        })
+          then(result)
+            assert result.status == 201
+            assert result.body.value == "hello"
+            assert result.body.threadId > 0
+            assert result.body.registered == true
+            assert result.marker == "yes"
+            assert is_string(result.token)
+            return null
+    return withServer({}, run)
+
+test "login auth, exact roles, token updates and logout"
+    run = (address)
+        return chain call(address, "/login/private")
+          then(result)
+            capture address
+            assert result.status == 401
+            assert result.token == null
+            return call(address, "/login")
+          then(login)
+            capture address
+            assert login.status == 200
+            return chain call(address, "/login/private", {}, login.token)
+              then(result)
+                capture address
+                capture login
+                assert result.status == 200
+                assert result.body.clientId == login.body.clientId
+                return call(address, "/admin/private", {}, login.token)
+              then(result)
+                capture address
+                capture login
+                assert result.status == 401
+                return call(address, "/logout", {}, login.token)
+              then(result)
+                capture address
+                assert result.status == 200
+                return call(address, "/login/private", {}, result.token)
+              then(result)
+                assert result.status == 401
+                return null
+    return withServer({}, run)
+
+test "Promise results and class toJSON serialize inside the worker"
+    run = (address)
+        return chain call(address, "/pause", {
+            value: "async"
+            ms: 20
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body.value == "async"
+            return call(address, "/serialized", {
+                value: "custom"
+            })
+          then(result)
+            assert result.status == 200
+            assert result.body.wrapped == "custom"
+            return null
+    return withServer({}, run)
+
+test "malformed JSON, unsupported media/method, unknown route and circular output"
+    run = (address)
+        return chain call(address, "/echo", "{")
+          then(result)
+            capture address
+            assert result.status == 400
+            return call(address, "/missing")
+          then(result)
+            capture address
+            assert result.status == 404
+            return call(address, "/circular")
+          then(result)
+            capture address
+            assert result.status == 500
+            assert result.token == null
+            return fetch("http://127.0.0.1:${address.port}/echo")
+          then(result)
+            capture address
+            assert result.status == 405
+            return call(address, "/echo", {}, null, {
+                "Content-Type": "text/plain"
+            })
+          then(result)
+            assert result.status == 415
+            return null
+    return withServer({}, run)
+
+test "exact routes beat wildcard routes and wildcard retains the actual path"
+    run = (address)
+        return chain call(address, "/wild/child", {
+            value: 1
+        })
+          then(result)
+            capture address
+            assert result.body.path == "/wild/child"
+            return call(address, "/wild/exact", {
+                value: 2
+            })
+          then(result)
+            assert result.body.wrapped == 2
+            return null
+    return withServer({}, run)
+
+test "registration and handler failures never issue changed tokens or private details"
+    run = (address)
+        return chain call(address, "/echo", {}, null, {
+            "x-register": "fail"
+        })
+          then(result)
+            capture address
+            assert result.status == 500
+            assert result.token == null
+            return call(address, "/fail")
+          then(result)
+            assert result.status == 500
+            assert result.token == null
+            assert result.body.error == "InternalServerError"
+            return null
+    return withServer({}, run)
+
+test "invalid signatures and expired tokens fail even at anonymous endpoints"
+    run = (address)
+        return chain call(address, "/echo", {}, "invalid")
+          then(result)
+            capture address
+            assert result.status == 401
+            assert result.token == null
+            return call(address, "/missing", {}, "invalid")
+          then(result)
+            assert result.status == 401
+            assert result.token == null
+            return null
+    return withServer({}, run)
+
+test "validation false, exception, mutation and timeout have distinct failures"
+    run = (address)
+        token = staleToken()
+        return chain call(address, "/echo", {}, token, {
+            "x-validate": "false"
+        })
+          then(result)
+            capture address
+            capture token
+            assert result.status == 401
+            return call(address, "/echo", {}, token, {
+                "x-validate": "error"
+            })
+          then(result)
+            capture address
+            capture token
+            assert result.status == 500
+            return call(address, "/echo", {}, token, {
+                "x-validate": "mutate"
+            })
+          then(result)
+            capture address
+            capture token
+            assert result.status == 500
+            return call(address, "/echo", {}, token, {
+                "x-validate": "block"
+            })
+          then(result)
+            assert result.status == 504
+            assert result.token == null
+            return null
+    return withServer({}, run)
+
+test "successful validation timestamp travels in JWT and skips immediate revalidation"
+    file = path/resolve(".test-output/validation.log")
+    fs/writeFileSync(file, "")
+    run = (address)
+        capture file
+        return chain call(address, "/echo", {}, staleToken(), {
+            "x-record": file
+        })
+          then(result)
+            capture address
+            capture file
+            assert result.status == 200
+            assert is_string(result.token)
+            return call(address, "/echo", {}, result.token, {
+                "x-record": file
+                "x-validate": "false"
+            })
+          then(result)
+            capture file
+            capture fs
+            assert result.status == 200
+            text = fs/readFileSync(file, "utf8")
+            text = text.trim()
+            lines = text.split("\n")
+            assert lines.length == 1
+            return null
+    return withServer({}, run)
+
+test "request events observe JSON and failures preserve the completed result"
+    file = path/resolve(".test-output/audit.log")
+    fs/writeFileSync(file, "")
+    run = (address)
+        capture file
+        return chain call(address, "/echo", {
+            value: "audit"
+        }, null, {
+            "x-record": file
+            "x-audit": "error"
+        })
+          then(result)
+            capture file
+            capture fs
+            assert result.status == 200
+            assert result.body.value == "audit"
+            text = fs/readFileSync(file, "utf8")
+            record = from_json(text.trim())
+            input = from_json(record.input)
+            output = from_json(record.output)
+            assert input.value == "audit"
+            assert output.value == "audit"
+            return null
+    return withServer({
+        requestEvent: true
+    }, run)
+
+test "a blocking Request event is killed without losing the prepared HTTP result"
+    run = (address)
+        return chain call(address, "/echo", {
+            value: "retained"
+        }, null, {
+            "x-audit": "block"
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body.value == "retained"
+            assert is_string(result.token)
+            return call(address, "/echo")
+          then(result)
+            assert result.status == 200
+            return null
+    return withServer({
+        requestEvent: true
+    }, run)
+
+test "worker crashes and synchronous request deadlines recover without retry"
+    run = (address)
+        return chain call(address, "/crash")
+          then(result)
+            capture address
+            assert result.status == 500
+            return call(address, "/pause", {
+                block: true
+                ms: 500
+            })
+          then(result)
+            capture address
+            assert result.status == 504
+            return call(address, "/echo")
+          then(result)
+            assert result.status == 200
+            return null
+    return withServer({
+        requestTimeoutMs: 100
+    }, run)
+
+test "full queues reject extra requests and graceful close drains accepted work"
+    run = (address)
+        first = call(address, "/pause", {
+            ms: 100
+        })
+        return chain wait(30)
+          then(ignored)
+            capture address
+            return call(address, "/echo")
+          then(result)
+            capture first
+            capture address
+            assert result.status == 503
+            return closeAndWait(address.server, first)
+          then(result)
+            assert result.status == 200
+            return null
+    return withServer({
+        maxQueue: 0
+    }, run)
+
+test "oversized bodies are rejected before dispatch"
+    run = (address)
+        return chain call(address, "/echo", {
+            value: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        })
+          then(result)
+            assert result.status == 413
+            assert result.token == null
+            return null
+    return withServer({
+        bodyLimit: 100
+    }, run)
+
+test "missing exports fail startup and close remains safe"
+    builder = new api/Builder(process.cwd())
+    builder.configure({
+        port: 0
+        workers: 1
+        key: "01234567890123456789012345678901"
+        startupTimeoutMs: 500
+    })
+    builder.endpoint({
+        path: "/bad"
+        module: path/resolve(".test-output/handlers.mjs")
+        handler: "missingExport"
+    })
+    server = builder.build()
+    return chain server.start()
+      then(address)
+        return false
+      catch(error)
+        return true
+      then(failed)
+        assert failed
+        return null
+      finally
+        capture server
+        return server.close()
+
+closeAndWait(server, pending)
+    return chain server.close()
+      then(ignored)
+        capture pending
+        return pending
+
+test "queued deadlines never execute the canceled handler"
+    file = path/resolve(".test-output/queue.log")
+    fs/rmSync(file, {
+        force: true
+    })
+    run = (address)
+        capture file
+        first = call(address, "/echo", {}, null, {
+            "x-audit": "block"
+        })
+        return queuedScenario(address, file, first)
+    return withServer({
+        requestTimeoutMs: 100
+        eventTimeoutMs: 300
+        requestEvent: true
+    }, run)
+
+queuedScenario(address, file, first)
+    return chain wait(30)
+      then(ignored)
+        capture address
+        capture file
+        return call(address, "/echo", {}, null, {
+            "x-record": file
+        })
+      then(result)
+        capture first
+        assert result.status == 504
+        return first
+      then(result)
+        capture file
+        capture fs
+        assert result.status == 200
+        assert !fs/existsSync(file)
+        return null
+
+test "a second start rejects and repeated close is safe"
+    run = (address)
+        return chain address.server.start()
+          then(result)
+            return false
+          catch(error)
+            return true
+          then(rejected)
+            assert rejected
+            return null
+    return withServer({}, run)
+
+test "a shutdown deadline reports failure and releases blocked workers"
+    run = (address)
+        first = call(address, "/pause", {
+            ms: 3000
+        })
+        observed = consumeFailure(first)
+        return chain wait(40)
+          then(ignored)
+            capture address
+            return address.server.close()
+          then(ignored)
+            return false
+          catch(error)
+            return true
+          then(rejected)
+            capture observed
+            assert rejected
+            return observed
+    result = withServer({
+        shutdownTimeoutMs: 100
+    }, run)
+    return chain result
+      then(ignored)
+        return false
+      catch(error)
+        assert error == "Server shutdown timed out"
+        return true
+      then(rejected)
+        assert rejected
+        return null
+
+consumeFailure(pending)
+    return chain pending
+      catch(error)
+        return null
+
+
+raw(address, stalled, oversized)
+    pending = new Promise((resolve, reject)
+        capture address
+        capture stalled
+        capture oversized
+        capture http
+        req = http/request({
+            host: "127.0.0.1"
+            port: address.port
+            path: "/echo"
+            method: "POST"
+            headers: {
+                "Content-Type": "application/json"
+            }
+        })
+        req.on("error", reject)
+        req.on("response", (res)
+            capture resolve
+            res.resume()
+            resolve(res.statusCode)
+        )
+        if stalled
+            req.write("{")
+          else
+              if oversized
+                  req.write("{\"value\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}")
+                else
+                    req.write("{}")
+              req.end()
+    )
+    return pending
+
+test "chunked bodies honor byte limits and stalled uploads honor body deadlines"
+    run = (address)
+        return chain raw(address, false, true)
+          then(status)
+            capture address
+            assert status == 413
+            return raw(address, true, false)
+          then(status)
+            capture address
+            assert status == 408
+            return call(address, "/echo")
+          then(result)
+            assert result.status == 200
+            return null
+    return withServer({
+        bodyLimit: 100
+        bodyTimeoutMs: 50
+    }, run)

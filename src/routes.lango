@@ -1,0 +1,160 @@
+import "./options"
+    contains(items, value)
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:module" as modules
+import "./options"
+    attributes(tag, allowed)
+import "./endpoint"
+    class Endpoint
+
+export class Routes(root)
+    methods
+        endpoint(spec)
+        include(spec, auth = null)
+        xml(file)
+        definitions()
+        events()
+        event(spec)
+
+Routes(root)
+    @root = path/resolve(root)
+    @items = []
+    @events = {}
+
+Routes:endpoint(spec)
+    item = new Endpoint(spec)
+    for @items as other
+        if other.path == item.path
+            throw "Duplicate endpoint: ${item.path}"
+    @items.add({
+        path: item.path
+        module: resolveModule(item.module, @root)
+        handler: item.handler
+        auth: item.auth
+    })
+    return @this
+
+Routes:event(spec)
+    if !contains(["register", "validate", "request"], spec.name)
+        throw "Unknown event: ${spec.name}"
+    if spec.name in @events
+        throw "Duplicate event: ${spec.name}"
+    if !is_string(spec.handler) or spec.handler == ""
+        throw "Event handler is required"
+    @events[spec.name] = {
+        module: resolveModule(spec.module, @root)
+        handler: spec.handler
+    }
+    return @this
+
+Routes:include(spec, auth = null)
+    includeAt(spec, @root, "", [], auth)
+    return @this
+
+Routes:xml(file)
+    readXml(path/resolve(file), "", @root, [], true)
+    return @this
+
+Routes:definitions()
+    return from_json(to_json(@items))
+
+Routes:events()
+    return from_json(to_json(@events))
+
+resolveModule(name, directory)
+    if !is_string(name) or name == "" or name.startsWith("node:")
+        throw "Application module is required"
+    resolver = modules/createRequire(path/join(directory, "package.json"))
+    resolved = resolver.resolve(name)
+    if !path/isAbsolute(resolved)
+        throw "Application module must resolve to a file: ${name}"
+    return resolved
+
+joinPath(prefix, suffix)
+    if !is_string(suffix) or !suffix.startsWith("/")
+        throw "Route path must begin with /"
+    if prefix == "" or prefix == "/"
+        return suffix
+    if suffix == "/"
+        return "${prefix}/"
+    return "${prefix}${suffix}"
+
+Routes:includeAt(spec, directory, prefix, stack, inheritedAuth = null)
+    if !is_string(spec.module) or spec.module == "" or spec.module.startsWith(".") or spec.module.startsWith("/") or spec.module.startsWith("node:")
+        throw "Include requires an npm package name"
+    mount = spec.path
+    if mount == null
+        mount = "/"
+    if !is_string(mount)
+        throw "Include path must be a string"
+    if mount.includes("*") or mount.includes("//") or mount.includes("?") or mount.includes("#") or mount.includes("\\")
+        throw "Invalid include prefix"
+    if mount.endsWith("/") and mount != "/"
+        mount = mount.slice(0, -1)
+    combined = joinPath(prefix, mount)
+    if combined == "/"
+        combined = ""
+    file = resolveModule("${spec.module}/routes.xml", directory)
+    readXml(file, combined, path/dirname(file), stack, false, inheritedAuth)
+    return null
+
+Routes:readXml(file, prefix, directory, stack, allowEvents, inheritedAuth = null)
+    real = fs/realpathSync(file)
+    if stack.includes(real)
+        throw "Route include cycle: ${real}"
+    root = xml2obj(fs/readFileSync(real, "utf8"))
+    if root.tag() != "routes"
+        throw "Expected routes root: ${real}"
+    attributes(root, [])
+    nextStack = stack.slice()
+    nextStack.add(real)
+    collect(root, prefix, null, inheritedAuth, directory, nextStack, allowEvents)
+    return null
+
+Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack, allowEvents)
+    if parent.innerText().trim() != ""
+        throw "Route XML cannot contain text"
+    for parent.children() as tag
+        spec = tag.attributes()
+        mod = spec.module
+        auth = spec.auth
+        if mod == null
+            mod = inheritedModule
+        if auth == null
+            auth = inheritedAuth
+        switch tag.tag()
+          case "endpoint"
+              attributes(tag, ["path", "module", "handler", "auth"])
+              leaf(tag)
+              endpoint({
+                  path: joinPath(prefix, spec.path)
+                  module: resolveModule(mod, directory)
+                  handler: spec.handler
+                  auth: auth
+              })
+          case "group"
+              attributes(tag, ["path", "module", "auth"])
+              collect(tag, joinPath(prefix, spec.path), mod, auth, directory, stack, false)
+          case "include"
+              attributes(tag, ["module", "path"])
+              leaf(tag)
+              includeAt(spec, directory, prefix, stack, auth)
+          case "event"
+              attributes(tag, ["name", "module", "handler"])
+              leaf(tag)
+              if !allowEvents
+                  throw "Events are only allowed in the application's root routes.xml"
+              event({
+                  name: spec.name
+                  module: resolveModule(spec.module, directory)
+                  handler: spec.handler
+              })
+          else
+              throw "Unknown routes element: ${tag.tag()}"
+    return null
+
+leaf(tag)
+    if tag.children().length != 0 or tag.innerText().trim() != ""
+        throw "Expected an empty ${tag.tag()} element"
+    return null

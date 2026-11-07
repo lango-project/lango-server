@@ -1,0 +1,42 @@
+import js "node:http" as http
+
+import "./options"
+    contains(items, value)
+export class Response()
+    methods
+        status(code)
+        header(name, value)
+        result(body)
+
+Response()
+    @status = 200
+    @headers = {
+        "content-type": "application/json; charset=utf-8"
+        "cache-control": "no-store"
+    }
+
+Response:status(code)
+    if !is_number(code) or code % 1 != 0 or code < 200 or code > 599 or code == 204 or code == 205 or code == 304
+        throw "Response requires a JSON-compatible HTTP status"
+    @status = code
+    return @this
+
+Response:header(name, value)
+    if !is_string(name) or !is_string(value)
+        throw "Header name and value must be strings"
+    name = name.toLowerCase()
+    if contains(["x-lango-token", "content-length", "transfer-encoding", "connection", "content-type"], name)
+        throw "Reserved response header: ${name}"
+    if name.includes("\r") or name.includes("\n") or value.includes("\r") or value.includes("\n")
+        throw "Invalid response header"
+    http/validateHeaderName(name)
+    http/validateHeaderValue(name, value)
+    @headers[name] = value
+    return @this
+
+Response:result(body)
+    return {
+        status: @status
+        headers: from_json(to_json(@headers))
+        body: body
+    }

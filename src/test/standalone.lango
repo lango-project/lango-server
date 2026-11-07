@@ -1,0 +1,174 @@
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:child_process" as children
+import js "node:assert/strict" as check
+import js global process
+import js global Promise
+import js global Object
+import js global Number
+import js global fetch
+import js global setTimeout
+import js global clearTimeout
+
+npm(args, directory)
+    command = [process.env.npm_execpath]
+    for args as arg
+        command.add(arg)
+    output = children/execFileSync(process.execPath, command, {
+        cwd: directory
+        encoding: "utf8"
+        stdio: ["ignore", "pipe", "pipe"]
+    })
+    return output
+
+launch(directory)
+    file = path/join(directory, "node_modules", "@lango-project", "lango-server", "dist", "cli", "server.mjs")
+    env = Object/assign({}, process.env, {
+        LANGO_JWT_KEY: "01234567890123456789012345678901"
+    })
+    child = children/spawn(process.execPath, [file, directory], {
+        cwd: directory
+        env: env
+        stdio: ["ignore", "pipe", "pipe"]
+    })
+    ready = Promise/withResolvers()
+    exited = Promise/withResolvers()
+    state = {
+        text: ""
+        errorText: ""
+        port: null
+        child: child
+        exited: exited.promise
+    }
+    child.stdout.on("data", (chunk)
+        capture state
+        capture ready
+        state.text = "${state.text}${chunk}"
+        if state.text.includes("Listening on") and state.text.includes("\n")
+            index = state.text.lastIndexOf(":")
+            state.port = Number/parseInt(state.text.slice(index + 1), 10)
+            ready.resolve(state)
+    )
+    child.stderr.on("data", (chunk)
+        capture state
+        state.errorText = "${state.errorText}${chunk}"
+        return null
+    )
+    child.once("error", (error)
+        capture ready
+        ready.reject(error)
+    )
+    child.once("exit", (code, signal)
+        capture ready
+        capture exited
+        capture state
+        if state.port == null
+            ready.reject("Standalone server exited before listening: ${state.errorText}")
+        exited.resolve(code)
+    )
+    expire = ()
+        capture ready
+        capture child
+        child.kill("SIGKILL")
+        ready.reject("Standalone startup timed out")
+    timer = setTimeout(expire, 5000)
+    return chain ready.promise
+      finally
+        capture timer
+        clearTimeout(timer)
+
+stop(state)
+    child = state.child
+    child.kill("SIGTERM")
+    expire = ()
+        capture child
+        child.kill("SIGKILL")
+    timer = setTimeout(expire, 5000)
+    return chain state.exited
+      then(code)
+        assert code == 0
+        return null
+      finally
+        capture timer
+        clearTimeout(timer)
+
+test "packed npm consumer runs exported XML includes and standalone SIGTERM shutdown"
+    root = process.cwd()
+    dir = fs/mkdtempSync(path/join(root, ".test-output", "consumer-"))
+    state = {
+        server: null
+    }
+    try
+        packed = from_json(npm(["pack", "--ignore-scripts", "--json", "--pack-destination", dir], root))
+        archive = path/join(dir, packed[0].filename)
+        fs/writeFileSync(path/join(dir, "package.json"), to_json({
+            name: "lango-server-consumer"
+            private: true
+            type: "module"
+        }))
+        npm(["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", archive], dir)
+        pkg = path/join(dir, "node_modules", "@lango-test", "feature")
+        fs/mkdirSync(pkg, {
+            recursive: true
+        })
+        fs/cpSync(path/join(root, "examples", "application", "dist"), pkg, {
+            recursive: true
+        })
+        fs/writeFileSync(path/join(pkg, "package.json"), to_json({
+            name: "@lango-test/feature"
+            type: "module"
+            exports: {
+                ".": "./handlers.mjs"
+                "./routes.xml": "./routes.xml"
+            }
+        }))
+        xml = <routes>
+            <endpoint path="/echo" module="@lango-test/feature" handler="echo" auth="anonymous"/>
+        </routes>
+        fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
+        xml = <routes><include module="@lango-test/feature" path="/mounted"/></routes>
+        fs/writeFileSync(path/join(dir, "routes.xml"), "${xml}")
+        xml = <deploy>
+            <http port="0"/>
+            <workers workers="2"/>
+            <jwt keyEnv="LANGO_JWT_KEY"/>
+        </deploy>
+        fs/writeFileSync(path/join(dir, "deploy.xml"), "${xml}")
+    catch error
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+        throw error
+    return chain launch(dir)
+      then(server)
+        capture state
+        state.server = server
+        return fetch("http://127.0.0.1:${state.server.port}/mounted/echo", {
+            method: "POST"
+            headers: {
+                "Content-Type": "application/json"
+            }
+            body: to_json({
+                message: "installed"
+            })
+        })
+      then(res)
+        assert res.status == 200
+        assert is_string(res.headers.get("x-lango-token"))
+        return res.json()
+      then(body)
+        assert body.message == "installed"
+        return null
+      finally
+        capture state
+        if state.server != null
+            return stop(state.server)
+        return null
+      finally
+        capture fs
+        capture dir
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })

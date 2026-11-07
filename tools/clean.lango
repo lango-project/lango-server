@@ -1,0 +1,10 @@
+import js "node:fs" as fs
+
+export main(args)
+
+main(args)
+    fs/rmSync("dist", {
+        recursive: true
+        force: true
+    })
+    return null

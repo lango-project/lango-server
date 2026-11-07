@@ -1,0 +1,208 @@
+import "../group"
+    class Group
+import js "node:assert/strict" as check
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:os" as os
+import js global process
+import js global Date
+import js global Object
+import "../options"
+    options(root, supplied = null)
+    deployment(directory)
+import "../routes"
+    class Routes
+import "../token"
+    class Token
+import "../tokens"
+    class Tokens
+import "../builder"
+    class Builder
+
+settings()
+    return options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+    })
+
+fixture()
+    dir = fs/mkdtempSync(path/join(process.cwd(), ".test-output", "routes-"))
+    fs/writeFileSync(path/join(dir, "package.json"), to_json({
+        private: true
+    }))
+    fs/writeFileSync(path/join(dir, "handler.mjs"), "")
+    return dir
+
+expectFailure(action)
+    failed = false
+    try
+        action()
+    catch error
+        failed = true
+    assert failed
+    return null
+
+test "configuration has bounded defaults and rejects unknown or unsafe options"
+    config = settings()
+    assert config.workers == 2
+    assert config.bodyLimit == 1048576
+    values = [-1, 0, 129, 2147483648, 1, "short"]
+    for ["port", "workers", "workers", "requestTimeoutMs", "typo", "key"] as index: name
+        spec = {
+            key: "01234567890123456789012345678901"
+        }
+        spec[name] = values[index]
+        action = ()
+            capture spec
+            options(process.cwd(), spec)
+        expectFailure(action)
+
+test "deployment XML resolves environment keys and rejects typos"
+    dir = fixture()
+    try
+        process.env.LANGO_SERVER_TEST_KEY = "01234567890123456789012345678901"
+        xml = <deploy>
+            <http port="0"/>
+            <workers workers="1" maxQueue="0"/>
+            <events requestEvent="true" eventTimeoutMs="250"/>
+            <jwt keyEnv="LANGO_SERVER_TEST_KEY"/>
+        </deploy>
+        file = path/join(dir, "deploy.xml")
+        fs/writeFileSync(file, "${xml}")
+        config = deployment(dir)
+        assert config.port == 0
+        assert config.workers == 1
+        assert config.requestEvent == true
+        xml = <deploy><workers typo="1"/></deploy>
+        fs/writeFileSync(file, "${xml}")
+        action = ()
+            capture dir
+            deployment(dir)
+        expectFailure(action)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "route XML groups inherit module and auth; duplicate paths and missing modules fail"
+    dir = fixture()
+    try
+        file = path/join(dir, "routes.xml")
+        xml = <routes>
+            <group path="/math" module="./handler.mjs" auth="anonymous">
+                <endpoint path="/add" handler="run"/>
+                <group path="/nested"><endpoint path="/run" handler="run"/></group>
+            </group>
+        </routes>
+        fs/writeFileSync(file, "${xml}")
+        routes = new Routes(dir)
+        routes.xml(file)
+        values = routes.definitions()
+        assert values.length == 2
+        assert values[0].path == "/math/add"
+        assert values[1].auth == "anonymous"
+        duplicate = ()
+            capture path
+            capture routes
+            capture dir
+            routes.endpoint({
+                path: "/math/add"
+                module: path/join(dir, "handler.mjs")
+                handler: "run"
+            })
+        expectFailure(duplicate)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "package includes use exported XML, compose prefixes and allow repeated mounts"
+    dir = fixture()
+    try
+        pkg = path/join(dir, "node_modules", "feature")
+        fs/mkdirSync(pkg, {
+            recursive: true
+        })
+        fs/writeFileSync(path/join(pkg, "package.json"), to_json({
+            name: "feature"
+            type: "module"
+            exports: {
+                ".": "./handler.mjs"
+                "./routes.xml": "./routes.xml"
+            }
+        }))
+        fs/writeFileSync(path/join(pkg, "handler.mjs"), "")
+        xml = <routes><endpoint path="/run" module="feature" handler="run"/></routes>
+        fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
+        routes = new Routes(dir)
+        routes.include({
+            module: "feature"
+            path: "/a"
+        })
+        routes.include({
+            module: "feature"
+            path: "/b"
+        })
+        values = routes.definitions()
+        assert values[0].path == "/a/run"
+        assert values[1].path == "/b/run"
+        group = new Group(routes, {
+            path: "/group"
+            module: "feature"
+            auth: "anonymous"
+        })
+        group.include({
+            module: "feature"
+        })
+        group.endpoint({
+            path: "/local"
+            handler: "run"
+        })
+        grouped = routes.definitions()
+        assert grouped[2].path == "/group/run"
+        assert grouped[2].auth == "anonymous"
+        assert grouped[3].path == "/group/local"
+        assert grouped[3].auth == "anonymous"
+        xml = <routes><include module="feature" path="/again"/></routes>
+        fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
+        action = ()
+            capture dir
+            other = new Routes(dir)
+            other.include({
+                module: "feature"
+                path: "/cycle"
+            })
+        expectFailure(action)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "JWT verifies signature expiry issuer audience and exact auth memberships"
+    service = new Tokens(settings())
+    claims = service.create()
+    token = new Token(claims)
+    token.AddAuth("login").AddAuth("superadmin")
+    assert token.hasAuth("login")
+    assert !token.hasAuth("admin")
+    signed = service.sign(token.snapshot())
+    read = service.read("Bearer ${signed}")
+    assert read.clientId == claims.clientId
+    action = ()
+        capture service
+        capture signed
+        service.read("Bearer ${signed}invalid")
+    expectFailure(action)
+    expired = token.snapshot()
+    expired.exp = 1
+    expiredAction = ()
+        capture service
+        capture expired
+        service.sign(expired)
+    expectFailure(expiredAction)
+    token.clearAuth()
+    assert !token.hasAuth("login")
+    original = service.read("Bearer ${signed}")
+    assert original.auth == "login, superadmin"

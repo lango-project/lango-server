@@ -1,0 +1,12 @@
+{
+  "name": "@lango-example/application",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/handlers.mjs",
+    "./routes.xml": "./routes.xml"
+  },
+  "dependencies": {
+    "@lango-project/lango-server": "file:../.."
+  }
+}

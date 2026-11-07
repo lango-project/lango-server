@@ -1,0 +1,70 @@
+import js "jsonwebtoken" as jwt
+import js "node:crypto" as crypto
+import js global Object
+import js global Date
+import js global Math
+import js global Number
+
+export class Tokens(settings)
+    methods
+        read(header)
+        sign(claims)
+        create()
+
+Tokens(settings)
+    @settings = settings
+
+Tokens:create()
+    settings = @settings
+    now = Math/floor(Date/now() / 1000)
+    return {
+        clientId: crypto/randomUUID()
+        auth: ""
+        iat: now
+        exp: now + settings.ttlSeconds
+        iss: settings.issuer
+        aud: settings.audience
+        validatedAt: Date/now()
+    }
+
+Tokens:read(header)
+    settings = @settings
+    if !is_string(header) or header.length > 16384 or header.slice(0, 7).toLowerCase() != "bearer " or header.length == 7
+        throw "InvalidToken"
+    encoded = header.slice(7)
+    decoded = jwt/default/decode(encoded, {
+        complete: true
+    })
+    if !is_object(decoded) or !is_object(decoded.header)
+        throw "InvalidToken"
+    head = decoded.header
+    if head.alg != "HS256" or head.typ != "JWT" or !is_string(head.kid) or head.crit != null or head.b64 != null
+        throw "InvalidToken"
+    keys = settings.keys
+    if !Object/hasOwn(keys, head.kid)
+        throw "InvalidToken"
+    claims = jwt/default/verify(encoded, keys[head.kid], {
+        algorithms: ["HS256"]
+        issuer: settings.issuer
+        audience: settings.audience
+    })
+    if !is_object(claims) or !is_string(claims.clientId) or claims.clientId == "" or !is_string(claims.auth)
+        throw "InvalidToken"
+    if !Number/isSafeInteger(claims.iat) or !Number/isSafeInteger(claims.exp) or claims.exp <= claims.iat or claims.exp - claims.iat > settings.ttlSeconds or claims.iat * 1000 > Date/now()
+        throw "InvalidToken"
+    if !Number/isSafeInteger(claims.validatedAt) or claims.validatedAt < claims.iat * 1000 or claims.validatedAt > Date/now()
+        throw "InvalidToken"
+    return claims
+
+Tokens:sign(claims)
+    settings = @settings
+    if claims.exp * 1000 <= Date/now()
+        throw "TokenExpired"
+    keys = settings.keys
+    return jwt/default/sign(claims, keys[settings.activeKeyId], {
+        algorithm: "HS256"
+        header: {
+            typ: "JWT"
+            kid: settings.activeKeyId
+        }
+    })

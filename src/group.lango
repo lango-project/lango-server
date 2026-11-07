@@ -1,0 +1,47 @@
+export class Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null)
+    methods
+        endpoint(spec)
+        group(spec)
+        include(spec)
+
+Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null)
+    if !is_string(spec.path) or !spec.path.startsWith("/") or spec.path.endsWith("/") or spec.path.includes("*")
+        throw "Group requires a path without a trailing slash or wildcard"
+    @routes = routes
+    @prefix = "${prefix}${spec.path}"
+    @module = spec.module
+    @auth = spec.auth
+    if @module == null
+        @module = inheritedModule
+    if @auth == null
+        @auth = inheritedAuth
+
+Group:endpoint(spec)
+    if !is_string(spec.path) or !spec.path.startsWith("/")
+        throw "Endpoint path must begin with /"
+    mod = spec.module
+    auth = spec.auth
+    if mod == null
+        mod = @module
+    if auth == null
+        auth = @auth
+    @routes.endpoint({
+        path: "${@prefix}${spec.path}"
+        module: mod
+        handler: spec.handler
+        auth: auth
+    })
+    return @this
+
+Group:group(spec)
+    return new Group(@routes, spec, @prefix, @module, @auth)
+
+Group:include(spec)
+    mount = spec.path
+    if mount == null
+        mount = "/"
+    @routes.include({
+        module: spec.module
+        path: "${@prefix}${mount}"
+    }, @auth)
+    return @this

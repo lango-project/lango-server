@@ -1,0 +1,26 @@
+import js "node:worker_threads" as threads
+import "./runtime"
+    class Runtime
+
+export global execute
+
+global runtime = new Runtime(threads.workerData)
+global execute = initialize()
+
+initialize()
+    global runtime
+    return chain runtime.preload()
+      then(ignored)
+        capture threads
+        threads/parentPort/postMessage({
+            kind: "ready"
+            threadId: threads.threadId
+        })
+        return workerHandler()
+
+run(task)
+    global runtime
+    return runtime.handle(task)
+
+workerHandler()
+    return run

@@ -1,0 +1,4 @@
+Lango Server
+Copyright 2026 Lango Project contributors
+
+Contains HTTP body-reading and worker-lifecycle techniques adapted from Lango API.
