@@ -8,9 +8,13 @@ import "./options"
 import "./endpoint"
     class Endpoint
 
+import "./longpoll_options"
+    longpollOptions(spec)
+
 export class Routes(root)
     methods
         endpoint(spec)
+        longpoll(spec)
         include(spec, auth = null)
         xml(file)
         definitions()
@@ -33,6 +37,14 @@ Routes:endpoint(spec)
         handler: item.handler
         auth: item.auth
     })
+    return @this
+
+Routes:longpoll(spec)
+    item = longpollOptions(spec)
+    for @items as other
+        if other.path == item.path
+            throw "Duplicate endpoint: ${item.path}"
+    @items.add(item)
     return @this
 
 Routes:event(spec)
@@ -133,6 +145,14 @@ Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack,
                   handler: spec.handler
                   auth: auth
               })
+          case "longpoll"
+              attributes(tag, ["path", "auth", "waitTimeoutMs", "retentionMs", "maxMessages", "fallback"])
+              leaf(tag)
+              spec.path = joinPath(prefix, spec.path)
+              spec.auth = auth
+              if spec.fallback != null
+                  spec.fallback = joinPath(prefix, spec.fallback)
+              longpoll(spec)
           case "group"
               attributes(tag, ["path", "module", "auth"])
               collect(tag, joinPath(prefix, spec.path), mod, auth, directory, stack, false)

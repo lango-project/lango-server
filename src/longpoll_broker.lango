@@ -1,0 +1,161 @@
+import js "redis" as redis
+import js "node:crypto" as crypto
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:module" as modules
+import js global Buffer
+import js global Promise
+import js global process
+import js global JSON
+import js global RegExp
+import js global Object
+import js global setTimeout
+import js global clearTimeout
+
+export class LongpollBroker(settings, routes)
+    methods
+        open()
+        close()
+        route(path)
+        publish(path, key, data)
+        cursor(path, key)
+        read(path, key, cursor)
+
+LongpollBroker(settings, routes)
+    @routes = Object/create(null)
+    for routes as item
+        if item.kind == "longpoll"
+            @routes[item.path] = item
+    @settings = settings.redis
+    @client = null
+    @script = null
+    if Object/keys(@routes).length > 0 and @settings == null
+        throw "Longpoll routes require Redis configuration"
+    @root = settings.root
+
+LongpollBroker:route(path)
+    if Object/hasOwn(@routes, path)
+        return @routes[path]
+    return null
+
+LongpollBroker:open()
+    if Object/keys(@routes).length == 0
+        return Promise/resolve(null)
+    resolver = modules/createRequire(path/join(@root, "package.json"))
+    entry = resolver.resolve("@lango-project/lango-server")
+    @script = fs/readFileSync(path/join(path/dirname(entry), "../src/longpoll.lua"), "utf8")
+    config = @settings
+    name = config.connectionEnv
+    @client = redis/createClient({
+        url: process.env[name]
+        disableOfflineQueue: true
+        commandsQueueMaxLength: 2048
+        socket: {
+            connectTimeout: 2000
+            reconnectStrategy: 500
+        }
+    })
+    client = @client
+    client.on("error", (error)
+        return null
+    )
+    return bounded(client.connect(), 3000)
+
+LongpollBroker:close()
+    if @client != null and @client.isOpen
+        @client.destroy()
+    return null
+
+LongpollBroker:publish(path, key, data)
+    body = JSON/stringify(data)
+    if !is_string(body) or Buffer/byteLength(body) > 262144
+        return Promise/reject("Longpoll message must be JSON within 262144 bytes")
+    return execute("publish", path, key, null, body)
+
+LongpollBroker:cursor(path, key)
+    return execute("cursor", path, key, null, "")
+
+LongpollBroker:read(path, key, cursor)
+    return execute("read", path, key, cursor, "")
+
+LongpollBroker:execute(operation, path, key, cursor, body)
+    item = route(path)
+    if item == null
+        return Promise/reject("Unknown longpoll path")
+    if !is_string(key) or key == "" or Buffer/byteLength(key) > 1024
+        return Promise/reject("Longpoll key must contain 1 to 1024 bytes")
+    if @client == null or !@client.isReady
+        return Promise/reject("RedisUnavailable")
+    hash = crypto/createHash("sha256")
+    hash.update(to_json([@settings.namespace, path, key]))
+    channel = hash.digest("hex")
+    prefix = "lango:longpoll:{${channel}}"
+    position = {
+        generation: ""
+        id: "0-0"
+    }
+    if cursor != null
+        position = decode(cursor, channel)
+        if position == null
+            return Promise/resolve({
+                resyncRequired: true
+            })
+    pending = @client.eval(@script, {
+        keys: ["${prefix}:stream", "${prefix}:meta"]
+        arguments: [operation, crypto/randomUUID(), "${item.retentionMs}", "${item.maxMessages}", position.generation, position.id, body]
+    })
+    return chain bounded(pending, 3000)
+      then(raw)
+        capture channel
+        capture operation
+        result = JSON/parse(raw)
+        if result.resyncRequired == true
+            return result
+        result.cursor = encode(channel, result.generation, result.id)
+        if operation != "read"
+            return result.cursor
+        messages = []
+        if is_array(result.messages)
+            for result.messages as message
+                messages.add({
+                    id: encode(channel, result.generation, message.id)
+                    data: JSON/parse(message.data)
+                })
+        return {
+            messages: messages
+            cursor: result.cursor
+            resyncRequired: false
+        }
+
+encode(channel, generation, id)
+    buffer = Buffer/from(to_json([channel, generation, id]))
+    return buffer.toString("base64url")
+
+decode(cursor, channel)
+    if !is_string(cursor) or cursor.length > 512
+        return null
+    try
+        buffer = Buffer/from(cursor, "base64url")
+        parts = from_json(buffer.toString("utf8"))
+        if !is_array(parts) or parts.length != 3 or parts[0] != channel or !is_string(parts[1]) or !is_string(parts[2])
+            return null
+        pattern = new RegExp("^(0|[1-9][0-9]{0,18})-(0|[1-9][0-9]{0,18})$")
+        if !pattern.test(parts[2]) or parts[2].length > 40
+            return null
+        return {
+            generation: parts[1]
+            id: parts[2]
+        }
+    catch error
+        return null
+
+bounded(pending, ms)
+    expired = Promise/withResolvers()
+    fail = ()
+        capture expired
+        expired.reject("RedisUnavailable")
+    timer = setTimeout(fail, ms)
+    return chain Promise/race([pending, expired.promise])
+      finally
+        capture timer
+        clearTimeout(timer)

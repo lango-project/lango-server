@@ -1,0 +1,545 @@
+import js "@lango-project/lango-server" as api
+import js "redis" as redis
+import js "node:crypto" as crypto
+import js "node:path" as path
+import js "node:assert/strict" as check
+import js global AbortController
+import js global Object
+import js global Promise
+import js global process
+import js global Date
+import js global Buffer
+import js global fetch
+import js global setTimeout
+import "../options"
+    options(root, supplied = null)
+import "../tokens"
+    class Tokens
+
+configuration(namespace, extra = null)
+    settings = {
+        port: 0
+        workers: 1
+        maxQueue: 64
+        key: "01234567890123456789012345678901"
+        requestTimeoutMs: 2000
+        shutdownTimeoutMs: 2000
+        redis: {
+            connectionEnv: "LANGO_TEST_REDIS"
+            namespace: namespace
+            maxPendingPolls: 16
+        }
+    }
+    if extra != null
+        Object/assign(settings, extra)
+    return settings
+
+create(namespace, route = null, extra = null)
+    builder = new api/Builder(process.cwd())
+    builder.configure(configuration(namespace, extra))
+    spec = {
+        path: "/updates"
+        auth: "anonymous"
+        waitTimeoutMs: 400
+        retentionMs: 60000
+        maxMessages: 100
+        fallback: "/state"
+    }
+    if route != null
+        Object/assign(spec, route)
+    builder.longpoll(spec)
+    builder.longpoll({
+        path: "/other"
+        auth: "anonymous"
+        waitTimeoutMs: 10
+    })
+    module = path/resolve(".test-output/longpoll_handlers.mjs")
+    for ["publish", "cursor"] as name
+        builder.endpoint({
+            path: "/${name}"
+            module: module
+            handler: name
+            auth: "anonymous"
+        })
+    for ["register", "validate"] as name
+        builder.event({
+            name: name
+            module: module
+            handler: name
+        })
+    return builder.build()
+
+withServers(run, route = null, extra = null)
+    if process.env.LANGO_TEST_REDIS == null
+        throw "Set LANGO_TEST_REDIS to a disposable Redis URL"
+    namespace = crypto/randomUUID()
+    first = create(namespace, route, extra)
+    second = create(namespace, route, extra)
+    return chain first.start()
+      then(a)
+        capture second
+        capture namespace
+        a.namespace = namespace
+        return chain second.start()
+          then(b)
+            capture run
+            capture a
+            capture first
+            capture second
+            return run(first, second, a, b)
+      finally
+        capture first
+        capture second
+        return Promise/all([first.close(), second.close()])
+
+call(address, endpoint, input, token = null, extra = null)
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if token != null
+        headers.Authorization = "Bearer ${token}"
+    if extra != null
+        Object/assign(headers, extra)
+    return chain fetch("http://127.0.0.1:${address.port}${endpoint}", {
+        method: "POST"
+        headers: headers
+        body: to_json(input)
+    })
+      then(res)
+        return chain res.json()
+          then(body)
+            capture res
+            return {
+                status: res.status
+                body: body
+                token: res.headers.get("x-lango-token")
+            }
+
+poll(address, key, cursor = null, token = null)
+    return call(address, "/updates", {
+        key: key
+        cursor: cursor
+    }, token)
+
+wait(ms)
+    pending = new Promise((resolve)
+        capture ms
+        setTimeout(resolve, ms)
+    )
+    return pending
+
+fails(pending)
+    return chain pending
+      then(value)
+        throw "Expected rejection"
+      catch(error)
+        assert error != "Expected rejection"
+        return null
+
+test "Redis history fans out across servers, survives restart and isolates channels"
+    run = (first, second, a, b)
+        return chain first.publish("/updates", "shared", {
+            value: 1
+        })
+          then(cursor)
+            capture a
+            capture b
+            return chain Promise/all([poll(a, "shared"), poll(b, "shared")])
+              then(results)
+                capture check
+                capture first
+                capture cursor
+                assert results[0].body.messages[0].data.value == 1
+                check/deepStrictEqual(results[0].body, results[1].body)
+                assert results[0].body.cursor == cursor
+                return first.close()
+              then(ignored)
+                capture second
+                return chain second.publish("/updates", "shared", 2)
+                  then(next)
+                    capture b
+                    capture cursor
+                    return poll(b, "shared", cursor)
+                  then(result)
+                    capture b
+                    assert result.body.messages.length == 1
+                    assert result.body.messages[0].data == 2
+                    return poll(b, "different")
+                  then(result)
+                    capture b
+                    assert result.body.messages.length == 0
+                    return call(b, "/other", {
+                        key: "shared"
+                    })
+                  then(result)
+                    assert result.body.messages.length == 0
+                    return null
+    return withServers(run)
+
+test "waiting polls release the single worker and worker context publishes through the broker"
+    run = (first, second, a, b)
+        return chain first.cursor("/updates", "key")
+          then(cursor)
+            capture a
+            waiting = []
+            for range(6) as index
+                waiting.add(poll(a, "key", cursor))
+            return chain wait(60)
+              then(ignored)
+                capture a
+                return call(a, "/publish", {
+                    path: "/updates"
+                    key: "key"
+                    data: "broadcast"
+                })
+              then(published)
+                capture waiting
+                assert published.status == 200
+                return Promise/all(waiting)
+              then(results)
+                for results as result
+                    assert result.status == 200
+                    assert result.body.messages[0].data == "broadcast"
+                return null
+    return withServers(run, {
+        waitTimeoutMs: 1500
+    })
+
+test "last delivered trimmed message remains valid; older cursors require resync"
+    run = (first, second, a, b)
+        return chain first.publish("/updates", "key", 1)
+          then(cursor)
+            capture first
+            return chain first.publish("/updates", "key", 2)
+              then(next)
+                capture first
+                return chain first.publish("/updates", "key", 3)
+                  then(third)
+                    capture a
+                    capture cursor
+                    return poll(a, "key", cursor)
+                  then(result)
+                    capture first
+                    assert result.status == 200
+                    assert result.body.messages.length == 2
+                    assert result.body.messages[0].data == 2
+                    return first.publish("/updates", "key", 4)
+                  then(fourth)
+                    capture a
+                    capture cursor
+                    return poll(a, "key", cursor)
+                  then(result)
+                    assert result.status == 409
+                    assert result.body.resyncRequired == true
+                    assert result.body.fallback == "/state"
+                    return null
+    return withServers(run, {
+        maxMessages: 2
+    })
+
+test "channel expiry changes generation and invalid or cross-channel cursors resync"
+    run = (first, second, a, b)
+        return chain first.publish("/updates", "key", 1)
+          then(cursor)
+            return chain wait(150)
+              then(ignored)
+                capture a
+                capture cursor
+                return poll(a, "key", cursor)
+              then(result)
+                capture a
+                capture cursor
+                assert result.status == 409
+                return poll(a, "other", cursor)
+              then(result)
+                capture a
+                assert result.status == 409
+                return poll(a, "key", "broken")
+              then(result)
+                assert result.status == 409
+                return null
+    return withServers(run, {
+        retentionMs: 80
+    })
+
+test "token expiry and validation are checked again before delivering a poll"
+    run = (first, second, a, b)
+        settings = options(process.cwd(), {
+            key: "01234567890123456789012345678901"
+        })
+        tokens = new Tokens(settings)
+        claims = tokens.create()
+        claims.exp = claims.iat + 1
+        encoded = tokens.sign(claims)
+        return chain poll(a, "key", null, encoded)
+          then(result)
+            capture a
+            capture tokens
+            assert result.status == 401
+            claims = tokens.create()
+            encoded = tokens.sign(claims)
+            return call(a, "/updates", {
+                key: "key"
+            }, encoded, {
+                "x-validate": "deny"
+            })
+          then(result)
+            assert result.status == 401
+            return null
+    return withServers(run, {
+        waitTimeoutMs: 1200
+    })
+
+test "invalid input, payload limits, bounded batches and namespace isolation"
+    run = (first, second, a, b)
+        return chain poll(a, "")
+          then(result)
+            capture first
+            assert result.status == 400
+            return fails(first.publish("/missing", "key", 1))
+          then(ignored)
+            capture first
+            text = "x"
+            return fails(first.publish("/updates", "key", text.repeat(262144)))
+          then(ignored)
+            capture first
+            pending = Promise/resolve(null)
+            for range(20) as index
+                pending = append(pending, first, index)
+            return pending
+          then(ignored)
+            capture a
+            return poll(a, "key")
+          then(result)
+            assert result.body.messages.length == 16
+            return null
+    return withServers(run)
+
+append(pending, server, index)
+    return chain pending
+      then(ignored)
+        capture server
+        capture index
+        return server.publish("/updates", "key", index)
+
+test "shutdown cancels pending waits promptly"
+    run = (first, second, a, b)
+        pending = poll(a, "key")
+        return chain wait(50)
+          then(ignored)
+            capture first
+            return first.close()
+          then(ignored)
+            capture pending
+            return pending
+          then(result)
+            assert result.status == 503
+            return null
+    return withServers(run, {
+        waitTimeoutMs: 10000
+    })
+
+test "a replacement server resumes Redis history after its predecessor closes"
+    run = (first, second, a, b)
+        return chain first.publish("/updates", "key", "before restart")
+          then(cursor)
+            capture first
+            return chain first.close()
+              then(ignored)
+                capture a
+                replacement = create(a.namespace)
+                return chain replacement.start()
+                  then(address)
+                    return chain poll(address, "key")
+                      then(result)
+                        capture address
+                        capture cursor
+                        assert result.body.messages[0].data == "before restart"
+                        return poll(address, "key", cursor)
+                      then(result)
+                        assert result.body.messages.length == 0
+                        return null
+                  finally
+                    capture replacement
+                    return replacement.close()
+    return withServers(run)
+
+test "namespaces isolate otherwise identical channel paths and keys"
+    run = (first, second, a, b)
+        capture crypto
+        isolated = create(crypto/randomUUID())
+        return chain first.publish("/updates", "key", "private")
+          then(cursor)
+            capture isolated
+            return isolated.start()
+          then(address)
+            return poll(address, "key")
+          then(result)
+            assert result.body.messages.length == 0
+            return null
+          finally
+            capture isolated
+            return isolated.close()
+    return withServers(run)
+
+test "pending poll limits reject excess subscriptions and disconnects free capacity"
+    run = (first, second, a, b)
+        waiting = []
+        controllers = []
+        for range(16) as index
+            controller = new AbortController()
+            controllers.add(controller)
+            waiting.add(abortable(a, controller))
+        return chain wait(100)
+          then(ignored)
+            capture a
+            return poll(a, "excess")
+          then(result)
+            capture controllers
+            capture waiting
+            assert result.status == 503
+            assert result.body.error == "PollLimit"
+            for controllers as controller
+                controller.abort()
+            return Promise/all(waiting)
+          then(ignored)
+            return wait(50)
+          then(ignored)
+            capture first
+            return first.close()
+          finally
+            capture controllers
+            for controllers as controller
+                controller.abort()
+    return withServers(run, {
+        waitTimeoutMs: 10000
+    })
+
+abortable(address, controller)
+    return chain fetch("http://127.0.0.1:${address.port}/updates", {
+        method: "POST"
+        headers: {
+            "content-type": "application/json"
+        }
+        body: to_json({
+            key: "key"
+        })
+        signal: controller.signal
+    })
+      catch(error)
+        assert error.name == "AbortError"
+        return null
+
+test "longpoll enforces route permissions even when the capability key is known"
+    run = (first, second, a, b)
+        return chain first.publish("/updates", "known", "secret")
+          then(cursor)
+            capture a
+            return poll(a, "known")
+          then(result)
+            assert result.status == 401
+            assert result.token == null
+            assert !Object/hasOwn(result.body, "messages")
+            return null
+    return withServers(run, {
+        auth: "admin"
+    })
+
+test "Redis command stalls return 503 without advancing the cursor and recover"
+    run = (first, second, a, b)
+      capture redis
+        client = redis/createClient({
+            url: process.env.LANGO_TEST_REDIS
+        })
+        client.on("error", (error)
+            return null
+        )
+        return chain first.cursor("/updates", "key")
+          then(cursor)
+            capture client
+            return chain client.connect()
+              then(ignored)
+                capture client
+                return client.sendCommand(["CLIENT", "PAUSE", "3600", "ALL"])
+              then(ignored)
+                capture a
+                capture cursor
+                return poll(a, "key", cursor)
+              then(result)
+                assert result.status == 503
+                assert result.body.error == "LongpollUnavailable"
+                assert result.token == null
+                return wait(700)
+              then(ignored)
+                capture first
+                return first.publish("/updates", "key", "recovered")
+              then(next)
+                capture a
+                capture cursor
+                return poll(a, "key", cursor)
+              then(result)
+                assert result.status == 200
+                assert result.body.messages[0].data == "recovered"
+                return null
+          finally
+            capture client
+            if client.isOpen
+                client.destroy()
+    return withServers(run)
+
+test "Redis disconnect and reconnect preserve shared history and worker cursor access"
+    run = (first, second, a, b)
+        capture redis
+        client = redis/createClient({
+            url: process.env.LANGO_TEST_REDIS
+        })
+        client.on("error", (error)
+            return null
+        )
+        return chain first.publish("/updates", "key", "before disconnect")
+          then(cursor)
+            capture client
+            return chain client.connect()
+              then(ignored)
+                capture client
+                return client.sendCommand(["CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes"])
+              then(ignored)
+                return wait(800)
+              then(ignored)
+                capture second
+                return second.publish("/updates", "key", "after reconnect")
+              then(next)
+                capture a
+                capture cursor
+                return chain poll(a, "key", cursor)
+                  then(result)
+                    capture a
+                    assert result.body.messages.length == 1
+                    assert result.body.messages[0].data == "after reconnect"
+                    return call(a, "/cursor", {
+                        path: "/updates"
+                        key: "key"
+                    })
+                  then(result)
+                    capture next
+                    assert result.status == 200
+                    assert result.body.cursor == next
+                    return null
+          finally
+            capture client
+            if client.isOpen
+                client.destroy()
+    return withServers(run)
+
+test "unreachable Redis fails startup and releases reconnect resources"
+    process.env.LANGO_TEST_UNREACHABLE_REDIS = "redis://127.0.0.1:1"
+    server = create("unreachable", null, {
+        redis: {
+            connectionEnv: "LANGO_TEST_UNREACHABLE_REDIS"
+            namespace: "unreachable"
+        }
+    })
+    return chain fails(server.start())
+      finally
+        capture server
+        return server.close()

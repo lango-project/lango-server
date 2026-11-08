@@ -1,3 +1,5 @@
+import "./server_context"
+    class ServerContext
 import "./database"
     class Database
 import js global Promise
@@ -19,6 +21,7 @@ export class Runtime(definition)
         close()
 
 Runtime(definition)
+    @serverContext = new ServerContext()
     @definition = definition
     @routes = []
     @events = {}
@@ -44,6 +47,9 @@ Runtime:close()
     return null
 
 Runtime:prepareRoute(pending, route)
+    if route.kind == "longpoll"
+        @routes.add(route)
+        return pending
     return chain pending
       then(ignored)
         capture route
@@ -98,6 +104,7 @@ Runtime:match(path)
 
 Runtime:handle(task)
     Object/freeze(task.request.headers)
+    context server = @serverContext
     context request = Object/freeze(task.request)
     context response = new Response()
     context log
@@ -124,6 +131,7 @@ Runtime:handle(task)
     context db = @database.scope()
     return chain Promise/resolve(null)
       then(ignored)
+        capture server
         capture request
         capture response
         capture token
@@ -135,6 +143,7 @@ Runtime:handle(task)
             return event("register", input)
         return validate()
       then(validatedAt)
+        capture server
         capture request
         capture response
         capture token
@@ -151,9 +160,12 @@ Runtime:handle(task)
                 status: 401
                 error: "Unauthorized"
             }
+        if route.kind == "longpoll"
+            return null
         handler = route.handler
         return handler(input)
       then(output)
+        capture server
         capture request
         capture response
         capture token
@@ -161,6 +173,24 @@ Runtime:handle(task)
         capture db
         capture task
         capture claims
+        if task.authorize == true
+            closeScope(db, true)
+            authorizedClaims = token.snapshot()
+            authorizedClaims.validatedAt = claims.validatedAt
+            encoded = @tokens.sign(authorizedClaims)
+            if task.pollResult == null
+                return {
+                    status: 200
+                    authorization: encoded
+                }
+            if task.pollResult.resyncRequired
+                response.status(409)
+            pollBody = JSON/stringify(task.pollResult)
+            pollResponse = response.result(pollBody)
+            pollResponse.headers["x-lango-token"] = encoded
+            if @definition.settings.requestEvent and "request" in @events
+                return audit(request.id, pollResponse, task.body, pollBody, authorizedClaims)
+            return pollResponse
         body = JSON/stringify(output)
         if !is_string(body)
             throw "Handler result is not JSON serializable"
@@ -173,6 +203,7 @@ Runtime:handle(task)
             return audit(request.id, result, task.body, body, updated)
         return result
       catch(error)
+        capture server
         capture request
         capture log
         capture db
@@ -188,6 +219,7 @@ Runtime:handle(task)
 Runtime:event(name, input)
     if !(name in @events)
         return null
+    context server
     context request
     context response
     context token
@@ -200,6 +232,7 @@ Runtime:event(name, input)
     })
     return chain Promise/resolve(null)
       then(ignored)
+        capture server
         capture request
         capture response
         capture token
@@ -209,6 +242,7 @@ Runtime:event(name, input)
         capture input
         return handler(input)
       finally
+        capture server
         capture request
         capture threads
         threads/parentPort/postMessage({
@@ -220,6 +254,7 @@ Runtime:validate()
     context db
     context token
     context response
+    context server
     context request
     context log
     claims = token.snapshot()
@@ -231,6 +266,7 @@ Runtime:validate()
       then(ignored)
         capture token
         capture response
+        capture server
         capture request
         capture log
         capture db
@@ -253,6 +289,7 @@ Runtime:validate()
 
 Runtime:audit(id, result, input, output, claims)
     context db = @database.scope()
+    context server
     context request
     context log
     context token = new Token(claims, true)
@@ -270,6 +307,7 @@ Runtime:audit(id, result, input, output, claims)
     return chain Promise/resolve(null)
       then(ignored)
         capture token
+        capture server
         capture request
         capture response
         capture log

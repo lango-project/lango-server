@@ -1,0 +1,31 @@
+import js global Promise
+
+export publish(input)
+export cursor(input)
+export register(input)
+export validate(input)
+
+publish(input)
+    context server
+    return chain server.publish(input.path, input.key, input.data)
+      then(cursor)
+        return {
+            cursor: cursor
+        }
+
+cursor(input)
+    context server
+    return chain server.cursor(input.path, input.key)
+      then(cursor)
+        return {
+            cursor: cursor
+        }
+
+register(input)
+    context token
+    token.AddAuth("login")
+    return null
+
+validate(input)
+    context request
+    return request.headers["x-validate"] != "deny"

@@ -430,3 +430,170 @@ lango-js 0.1.13 archive before running a fresh registry-based installation or CI
 then build/publish lango-server and rebuild application SQL modules. Local validation
 uses the exact prepared compiler archive, without npm links; nothing is automatically
 published by these commands.
+
+## Long polling
+
+Long polling uses Redis Streams for shared, retained history. Ordinary HTTP/SQL
+applications do not connect to Redis. Applications declaring a longpoll route must
+configure Redis; a missing configuration or unreachable Redis fails startup.
+Redis 6.2 or newer is required. Use a single Redis endpoint (including a managed HA
+endpoint); Redis Cluster and Sentinel discovery are not supported in this release.
+All pods must use the same namespace, routes, JWT configuration and Redis database.
+No sticky sessions are required.
+
+```xml
+<!-- deploy.xml -->
+<deploy>
+    <jwt keyEnv="APP_JWT_KEY"/>
+    <redis connectionEnv="REDIS_URL" namespace="my-app" maxPendingPolls="1024"/>
+</deploy>
+```
+
+```xml
+<!-- routes.xml -->
+<routes>
+    <longpoll path="/updates" auth="login" waitTimeoutMs="20000"
+              retentionMs="300000" maxMessages="1000" fallback="/state"/>
+</routes>
+```
+
+The Builder equivalent is `builder.longpoll(options)` or
+`group.longpoll(options)`. No module or handler is needed. Group and include
+prefixes apply to both `path` and `fallback`; auth is inherited and defaults to
+`login`. Paths must be exact absolute URL paths, without wildcards or query
+strings. Duplicate paths conflict with endpoints as well as other longpoll routes.
+The fallback is returned to the client; the server never calls it automatically.
+
+Publish from any handler or event:
+
+```lango
+notify(input)
+    context server
+    return chain server.publish("/updates", input.key, {
+        type: "changed"
+        value: input.value
+    })
+      then(cursor)
+        return {
+            cursor: cursor
+        }
+```
+
+`server.publish(path, key, data)` resolves to an opaque cursor after Redis has
+accepted the JSON message. `server.cursor(path, key)` resolves to the current
+cursor without publishing. Both are also methods on the public `Server` instance
+for application code outside workers. They require a running server and a declared
+longpoll path. The framework does not expose a public HTTP publish endpoint.
+Inside workers, `context server` forwards these calls to the main process.
+Application URLs passed to these methods are the final mounted paths.
+
+The key is an application-generated capability string, containing 1–1024 UTF-8
+bytes. Use an unpredictable value and share it only with intended subscribers.
+It is deliberately independent of `clientId`: all authorized subscribers sharing
+a key receive the same messages. Route auth and JWT validation still apply.
+
+### HTTP protocol
+
+Send JSON POST requests to the longpoll URL, with the usual Bearer token:
+
+```json
+{"key":"application-generated-secret", "cursor":null}
+```
+
+Omitting `cursor` or sending `null` starts at the oldest currently retained
+message. It does not claim to recover messages removed before the subscription
+started. To subscribe only to future changes, obtain an application-provided
+`server.cursor()` value first. The application is responsible for coordinating
+that cursor with its initial snapshot.
+
+A successful response (HTTP 200) has this shape:
+
+```json
+{
+  "messages": [{"id":"opaque-message-cursor", "data":{"value":42}}],
+  "cursor":"opaque-last-delivered-cursor",
+  "resyncRequired":false
+}
+```
+
+The usual `x-lango-token` response header carries the updated token. A normal wait
+timeout returns HTTP 200 with `messages: []` and a continuation cursor. Send the
+next request immediately. Only advance the stored cursor after processing the
+messages successfully. Delivery can repeat; `messages[].id` supports deduplication.
+Reading does not delete messages or consume another subscriber's share.
+
+An expired/recreated channel, missing history, future position, malformed cursor
+or cursor from another channel returns HTTP 409:
+
+```json
+{"resyncRequired":true, "fallback":"/state"}
+```
+
+`fallback` is `null` when unconfigured. No replacement cursor is silently issued.
+Fetch a fresh snapshot through the application's normal authenticated endpoint,
+then resume using the cursor accompanying that snapshot. A cursor identifies its
+channel generation and Redis message ID; a pod restart alone does not invalidate it.
+A cursor equal to the most recently trimmed message remains a valid continuation
+if no later unseen message was removed.
+
+Invalid poll input returns 400. Missing/invalid/expired credentials or insufficient
+route permission return 401. Unavailable Redis, command timeout or shutdown while
+waiting returns 503; exceeding the pending limit returns 503 `PollLimit`.
+No token or advanced cursor is returned for infrastructure failures. Redis errors
+never turn into successful empty responses or an in-memory history fallback.
+Retry failures with backoff; abort the HTTP request when the subscription closes.
+
+### Waiting, limits and operations
+
+Waiting HTTP requests stay in the main process and hold neither a worker nor a
+request database scope. Short worker jobs run Register/Validate/auth before
+waiting and validate again before message delivery, resync or normal timeout.
+The existing one-second Validate freshness window applies; waiting never extends
+JWT expiry. Request events run for completed poll responses using the normal
+prepared-result behavior. Worker jobs retain the usual queue/deadline limits.
+
+One shared, nonblocking Redis connection per Server reads pending subscriptions
+at intervals of up to 250 ms. There is no connection per poll and no Pub/Sub
+correctness dependency. A read immediately precedes waiting, so a publication
+between reads is replayed from history. Command and startup Redis waits are bounded
+to three seconds; reconnect attempts happen automatically. Disconnected requests
+and shutdown release timers and pending subscriptions.
+
+| Limit | Default | Supported range |
+| --- | ---: | ---: |
+| `waitTimeoutMs` | 20,000 | 1–60,000 ms |
+| `retentionMs` | 300,000 | 1–86,400,000 ms |
+| `maxMessages` per channel | 1,000 | 1–10,000 |
+| Redis `maxPendingPolls` per Server | 1,024 | 1–10,000 |
+| Key size | — | 1–1,024 UTF-8 bytes |
+| Published JSON size | — | up to 262,144 UTF-8 bytes |
+| Messages per response | — | up to 16 |
+| Sum of message JSON bytes per response | — | up to 1,048,576 bytes |
+
+JSON envelope and cursor bytes are additional to the response data limit. Normal
+HTTP body limits also apply. Streams and metadata expire after an idle retention
+period; reads do not keep unused channels alive. Publishing refreshes that expiry.
+Age/count trimming and cursor checks execute atomically in a small Redis Lua
+resource; framework code and worker integration are written in Lango. Channel
+storage keys hash the namespace, URL and capability key. Configure Redis capacity,
+eviction policy, persistence and HA for the application; eviction/lost history
+requires resync. Keep retention comfortably above the polling/retry interval.
+
+A publish timing out has an uncertain outcome: Redis may have accepted it. Retry
+with application message identifiers if business-level deduplication is required.
+SQL writes and Redis publication are separate operations. Use an application
+outbox when they must reliably occur together. Likewise, reading a database
+snapshot followed by the latest cursor is not an atomic snapshot protocol; use a
+consistent application revision or replay-safe updates. Redis failover does not
+provide a universal zero-data-loss guarantee.
+
+Run the Redis integration suite against a **disposable** Redis database:
+
+```sh
+npm run build
+LANGO_TEST_REDIS=redis://127.0.0.1:6379 npm run test:longpoll
+```
+
+The suite briefly pauses Redis commands to test infrastructure timeouts. Do not
+point it at a shared or production Redis instance. CI runs this suite separately
+from `npm test`, alongside the PostgreSQL integration suite.

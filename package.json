@@ -19,6 +19,7 @@
   "files": [
     "dist/**",
     "src/*.lango",
+    "src/*.lua",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -28,12 +29,14 @@
     "test": "npm run build && lango build src/test/handlers.lango --out .test-output/handlers.mjs && lango build src/test/sql_handlers.lango --out .test-output/sql_handlers.mjs && lango test src/test/database.lango --build-dir .test-output/database && lango test src/test/unit.lango --build-dir .test-output/unit && lango test src/test/http.lango --build-dir .test-output/http && lango test src/test/standalone.lango --build-dir .test-output/standalone",
     "start": "node dist/cli/server.mjs examples/application",
     "prepack": "npm run build",
-    "test:postgres": "lango build src/test/sql_handlers.lango --out .test-output/sql_handlers.mjs && lango test src/test/database.lango --build-dir .test-output/database-postgres"
+    "test:postgres": "lango build src/test/sql_handlers.lango --out .test-output/sql_handlers.mjs && lango test src/test/database.lango --build-dir .test-output/database-postgres",
+    "test:longpoll": "lango build src/test/longpoll_handlers.lango --out .test-output/longpoll_handlers.mjs && lango test src/test/longpoll.lango --build-dir .test-output/longpoll && lango test src/test/standalone.lango --build-dir .test-output/standalone-longpoll"
   },
   "dependencies": {
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.1",
-    "piscina": "^5.3.2"
+    "piscina": "^5.3.2",
+    "redis": "^5.12.1"
   },
   "devDependencies": {
     "@lango-project/lango-js": "^0.1.13"

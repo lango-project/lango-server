@@ -100,6 +100,12 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
     }
     try
         packed = from_json(npm(["pack", "--ignore-scripts", "--json", "--pack-destination", dir], root))
+        files = packed[0].files
+        found = false
+        for files as entry
+            if entry.path == "src/longpoll.lua"
+                found = true
+        assert found
         archive = path/join(dir, packed[0].filename)
         fs/writeFileSync(path/join(dir, "package.json"), to_json({
             name: "lango-server-consumer"
@@ -134,6 +140,19 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
             <workers workers="2"/>
             <jwt keyEnv="LANGO_JWT_KEY"/>
         </deploy>
+        if process.env.LANGO_TEST_REDIS != null
+            pollRoutes = <routes>
+                <include module="@lango-test/feature" path="/mounted"/>
+                <longpoll path="/updates" auth="anonymous" waitTimeoutMs="20"/>
+            </routes>
+            fs/writeFileSync(path/join(dir, "routes.xml"), "${pollRoutes}")
+            xml = <deploy>
+                <http port="0"/>
+                <database type="sqlite" file="data/app.sqlite"/>
+                <workers workers="2"/>
+                <jwt keyEnv="LANGO_JWT_KEY"/>
+                <redis connectionEnv="LANGO_TEST_REDIS" namespace="packed-test"/>
+            </deploy>
         fs/writeFileSync(path/join(dir, "deploy.xml"), "${xml}")
     catch error
         fs/rmSync(dir, {
@@ -159,9 +178,27 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         assert is_string(res.headers.get("x-lango-token"))
         return res.json()
       then(body)
+        capture state
         assert body.message == "installed"
         assert is_string(body.id)
-        return null
+        if process.env.LANGO_TEST_REDIS == null
+            return null
+        return chain fetch("http://127.0.0.1:${state.server.port}/updates", {
+            method: "POST"
+            headers: {
+                "Content-Type": "application/json"
+            }
+            body: to_json({
+                key: "packaged-consumer"
+            })
+        })
+          then(res)
+            assert res.status == 200
+            return res.json()
+          then(batch)
+            assert batch.messages.length == 0
+            assert is_string(batch.cursor)
+            return null
       finally
         capture state
         if state.server != null

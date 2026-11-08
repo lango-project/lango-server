@@ -1,6 +1,9 @@
+import js global Object
+
 export class Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null)
     methods
         endpoint(spec)
+        longpoll(spec)
         group(spec)
         include(spec)
 
@@ -31,6 +34,16 @@ Group:endpoint(spec)
         handler: spec.handler
         auth: auth
     })
+    return @this
+
+Group:longpoll(spec)
+    item = Object/assign({}, spec)
+    item.path = "${@prefix}${spec.path}"
+    if item.auth == null
+        item.auth = @auth
+    if item.fallback != null
+        item.fallback = "${@prefix}${item.fallback}"
+    @routes.longpoll(item)
     return @this
 
 Group:group(spec)

@@ -4,6 +4,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     services:
+      redis:
+        image: redis:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
       postgres:
         image: postgres:18
         env:
@@ -26,3 +33,6 @@ jobs:
       - run: npm run test:postgres
         env:
           LANGO_TEST_POSTGRES: postgresql://lango:lango@127.0.0.1:5432/lango
+      - run: npm run test:longpoll
+        env:
+          LANGO_TEST_REDIS: redis://127.0.0.1:6379

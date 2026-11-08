@@ -1,3 +1,7 @@
+import "./longpoll_broker"
+    class LongpollBroker
+import "./longpoll_session"
+    class LongpollSession
 import "./database"
     prepareDatabase(settings)
 import js "node:http" as http
@@ -27,6 +31,8 @@ export class Server(path, definition = null)
     methods
         start()
         close()
+        publish(path, key, data)
+        cursor(path, key)
 
 Server(path, definition = null)
     if path != null
@@ -41,7 +47,10 @@ Server(path, definition = null)
     if definition == null
         throw "Use Server(directory) or Builder.build()"
     @definition = from_json(to_json(definition))
+    @broker = new LongpollBroker(@definition.settings, @definition.routes)
+    @polls = Object/create(null)
     @state = "new"
+    @connections = []
     @server = null
     @pool = null
     @starting = null
@@ -56,6 +65,16 @@ Server(path, definition = null)
 pathJoin(directory, file)
     return path/join(directory, file)
 
+Server:publish(path, key, data)
+    if @state != "running"
+        return Promise/reject("Server is not running")
+    return @broker.publish(path, key, data)
+
+Server:cursor(path, key)
+    if @state != "running"
+        return Promise/reject("Server is not running")
+    return @broker.cursor(path, key)
+
 Server:start()
     if @state != "new"
         return Promise/reject("Server can only be started once")
@@ -65,7 +84,7 @@ Server:start()
 
 Server:launch()
     settings = @definition.settings
-    return chain Promise/resolve(null)
+    return chain @broker.open()
       then(ignored)
         capture path
         capture modules
@@ -100,6 +119,9 @@ Server:launch()
             receive(req, res)
         )
         @server = server
+        server.on("connection", (socket)
+            connected(socket)
+        )
         server.headersTimeout = settings.bodyTimeoutMs
         server.requestTimeout = settings.bodyTimeoutMs
         listening = new Promise((resolve, reject)
@@ -124,6 +146,7 @@ Server:launch()
         )
         return listening
       catch(error)
+        @broker.close()
         @state = "closed"
         return chain destroyPool()
           then(ignored)
@@ -142,6 +165,9 @@ startupDeadline(pending, timeout)
         clearTimeout(timer)
 
 Server:messageReceived(message)
+    if message.kind == "longpoll"
+        brokerMessage(message)
+        return null
     if message.kind == "ready"
         if !@readyIds.includes(message.threadId)
             @readyIds.add(message.threadId)
@@ -170,7 +196,44 @@ Server:resetDeadline(record, duration)
     record.timer = setTimeout(expired, Math/max(1, duration))
     return null
 
+Server:connected(socket)
+    record = {
+        socket: socket
+        active: 0
+    }
+    @connections.add(record)
+    socket.once("close", ()
+        capture record
+        index = @connections.indexOf(record)
+        if index >= 0
+            @connections.splice(index, 1)
+    )
+    return null
+
+Server:trackResponse(req, res)
+    for @connections as record
+        if record.socket == req.socket
+            record.active = record.active + 1
+            state = {
+                done: false
+            }
+            complete = ()
+                capture record
+                capture state
+                if state.done
+                    return null
+                state.done = true
+                record.active = record.active - 1
+                if @state == "closing" and record.active == 0
+                    record.socket.end()
+                return null
+            res.once("finish", complete)
+            res.once("close", complete)
+            return null
+    return null
+
 Server:receive(req, res)
+    trackResponse(req, res)
     req.on("error", (error)
         return null
     )
@@ -203,19 +266,90 @@ Server:receive(req, res)
     return null
 
 Server:submit(req, res, body)
+    pending = null
+    route = @broker.route(req.url)
+    if route == null
+        pending = dispatch(req, res, body)
+      else
+          pending = longpoll(req, res, body, route)
+    return chain pending
+      then(result)
+        capture res
+        send(res, result)
+        return null
+      catch(error)
+        capture res
+        send(res, failure(500, "InternalServerError"))
+        return null
+
+Server:longpoll(req, res, body, route)
+    if Object/keys(@polls).length >= @definition.settings.redis.maxPendingPolls
+        return Promise/resolve(failure(503, "PollLimit"))
+    authorize = (token, result)
+        capture req
+        capture res
+        capture body
+        return dispatch(req, res, body, true, token, result)
+    session = new LongpollSession(@broker, route, authorize, body)
+    id = crypto/randomUUID()
+    @polls[id] = session
+    disconnected = ()
+        capture session
+        session.cancel()
+    res.once("close", disconnected)
+    return chain session.run()
+      finally
+        capture res
+        capture disconnected
+        capture id
+        res.removeListener("close", disconnected)
+        Reflect/deleteProperty(@polls, id)
+
+Server:brokerMessage(message)
+    port = message.port
+    pending = null
+    try
+        switch message.operation
+          case "publish"
+              pending = publish(message.path, message.key, message.data)
+          case "cursor"
+              pending = cursor(message.path, message.key)
+          else
+              pending = Promise/reject("Unknown longpoll operation")
+    catch error
+        pending = Promise/reject(error)
+    return chain pending
+      then(value)
+        capture port
+        brokerReply(port, {
+            ok: true
+            value: value
+        })
+      catch(error)
+        capture port
+        brokerReply(port, {
+            ok: false
+        })
+      finally
+        capture port
+        port.close()
+
+Server:dispatch(req, res, body, authorize = false, token = null, pollResult = null)
     settings = @definition.settings
     if @state != "running" or (@active >= settings.workers and @waiting.length >= settings.maxQueue)
-        return send(res, failure(503, "Unavailable"))
+        return Promise/resolve(failure(503, "Unavailable"))
     id = crypto/randomUUID()
     record = {
         id: id
         task: {
+            authorize: authorize
+            pollResult: pollResult
             body: body
             request: {
                 id: id
                 method: req.method
                 path: req.url
-                headers: req.headers
+                headers: Object/assign({}, req.headers)
                 remoteAddress: req.socket.remoteAddress
             }
         }
@@ -227,31 +361,28 @@ Server:submit(req, res, body)
         deadline: Date/now() + settings.requestTimeoutMs
         timer: null
     }
+    if token != null
+        record.task.request.headers.authorization = "Bearer ${token}"
     @tasks[id] = record
     resetDeadline(record, settings.requestTimeoutMs)
     @waiting.add(record)
-    res.once("close", ()
+    disconnected = ()
         capture res
         capture record
         if !res.writableEnded
             cancel(record)
-    )
+    res.once("close", disconnected)
     pump()
     return chain record.completed.promise
-      then(result)
-        capture res
-        send(res, result)
-        return null
       catch(error)
-        capture res
         capture record
-        code = 500
-        name = "InternalServerError"
         if record.expired
-            code = 504
-            name = "RequestTimeout"
-        send(res, failure(code, name))
-        return null
+            return failure(504, "RequestTimeout")
+        return failure(500, "InternalServerError")
+      finally
+        capture res
+        capture disconnected
+        res.removeListener("close", disconnected)
 
 Server:expire(record)
     record.expired = true
@@ -322,6 +453,11 @@ Server:close()
     return @closing
 
 Server:stop()
+    for @connections as record
+        if record.active == 0
+            record.socket.destroy()
+    for @polls as id: session
+        session.cancel()
     drained = new Promise((resolve)
         server = @server
         if server == null or !server.listening
@@ -349,6 +485,7 @@ Server:stop()
         clearTimeout(timer)
         return destroyPool()
       finally
+        @broker.close()
         @state = "closed"
 
 Server:destroyPool()
@@ -430,3 +567,10 @@ main(args)
         process.removeListener("SIGTERM", stop)
         process.removeListener("SIGINT", stop)
         throw error
+
+brokerReply(port, message)
+    try
+        port.postMessage(message)
+    catch error
+        return null
+    return null

@@ -246,3 +246,84 @@ test "database configuration is optional, strict and resolves application-relati
             recursive: true
             force: true
         })
+
+test "longpoll XML and Builder groups inherit auth and compose fallback prefixes"
+    dir = fixture()
+    try
+        pkg = path/join(dir, "node_modules", "feature")
+        fs/mkdirSync(pkg, {
+            recursive: true
+        })
+        fs/writeFileSync(path/join(pkg, "package.json"), to_json({
+            name: "feature"
+            exports: {
+                "./routes.xml": "./routes.xml"
+            }
+        }))
+        xml = <routes>
+            <group path="/nested" auth="admin">
+                <longpoll path="/updates" fallback="/state" waitTimeoutMs="50"/>
+            </group>
+        </routes>
+        fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
+        routes = new Routes(dir)
+        routes.include({
+            module: "feature"
+            path: "/app"
+        })
+        definitions = routes.definitions()
+        assert definitions[0].path == "/app/nested/updates"
+        assert definitions[0].fallback == "/app/nested/state"
+        assert definitions[0].auth == "admin"
+        assert definitions[0].waitTimeoutMs == 50
+        group = new Group(routes, {
+            path: "/builder"
+            auth: "anonymous"
+        })
+        group.longpoll({
+            path: "/updates"
+            fallback: "/state"
+        })
+        definitions = routes.definitions()
+        assert definitions[1].fallback == "/builder/state"
+        assert definitions[1].auth == "anonymous"
+        duplicate = ()
+            capture routes
+            routes.longpoll({
+                path: "/builder/updates"
+            })
+        expectFailure(duplicate)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "longpoll rejects wildcards, unsafe limits, and missing Redis configuration"
+    for ["/bad/*", "/bad?query", "relative"] as value
+        bad = ()
+            capture value
+            routes = new Routes(process.cwd())
+            routes.longpoll({
+                path: value
+            })
+        expectFailure(bad)
+    for [0, -1, 60001, true, "wrong"] as value
+        bad = ()
+            capture value
+            routes = new Routes(process.cwd())
+            routes.longpoll({
+                path: "/updates"
+                waitTimeoutMs: value
+            })
+        expectFailure(bad)
+    missing = ()
+        builder = new Builder(process.cwd())
+        builder.configure({
+            key: "01234567890123456789012345678901"
+        })
+        builder.longpoll({
+            path: "/updates"
+        })
+        builder.build()
+    expectFailure(missing)

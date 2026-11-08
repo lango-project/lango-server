@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add Redis-backed longpoll routes, replay cursors and explicit resync responses.
+- Add Builder/group longpoll configuration and context server publish/cursor APIs.
+- Keep pending polls outside worker/database scopes; recheck authentication before delivery.
+- Bound retention, messages, pending subscriptions and infrastructure waits; add multi-server Redis tests.
+
 ## 0.1.0
 
 * Add optional SQLite/PostgreSQL configuration and request-scoped Lango SQL.

@@ -13,6 +13,7 @@ export class Builder(root = null)
     methods
         configure(settings)
         endpoint(spec)
+        longpoll(spec)
         group(spec)
         include(spec)
         event(spec)
@@ -32,6 +33,10 @@ Builder:configure(settings)
 
 Builder:endpoint(spec)
     @routes.endpoint(spec)
+    return @this
+
+Builder:longpoll(spec)
+    @routes.longpoll(spec)
     return @this
 
 Builder:group(spec)

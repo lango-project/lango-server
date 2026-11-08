@@ -1,0 +1,90 @@
+import js global Promise
+import js global Buffer
+import js global Date
+import js global Math
+import js global setTimeout
+import js global clearTimeout
+
+export class LongpollSession(broker, route, authorize, body)
+    methods
+        run()
+        cancel()
+
+LongpollSession(broker, route, authorize, body)
+    @broker = broker
+    @route = route
+    @authorize = authorize
+    @body = body
+    @cancelled = false
+    @timer = null
+    @sleep = null
+    @token = null
+    @deadline = 0
+    @input = null
+    @cursor = null
+
+LongpollSession:cancel()
+    @cancelled = true
+    clearTimeout(@timer)
+    if @sleep != null
+        @sleep.resolve(null)
+    return null
+
+LongpollSession:run()
+    try
+        @input = from_json(@body)
+        input = @input
+        if !is_object(input) or is_array(input) or !is_string(input.key) or input.key == "" or Buffer/byteLength(input.key) > 1024
+            return Promise/resolve(failure(400, "InvalidLongpollInput"))
+        if input.cursor != null and (!is_string(input.cursor) or input.cursor.length > 512)
+            return Promise/resolve(failure(400, "InvalidLongpollInput"))
+        @cursor = input.cursor
+    catch error
+        return Promise/resolve(failure(400, "InvalidJson"))
+    auth = @authorize
+    return chain auth(null, null)
+      then(result)
+        if result.status != 200
+            return result
+        @token = result.authorization
+        @deadline = Date/now() + @route.waitTimeoutMs
+        return poll()
+      catch(error)
+        return failure(503, "LongpollUnavailable")
+      finally
+        cancel()
+
+LongpollSession:poll()
+    if @cancelled
+        return Promise/resolve(failure(503, "Unavailable"))
+    return chain @broker.read(@route.path, @input.key, @cursor)
+      then(batch)
+        if @cancelled
+            return failure(503, "Unavailable")
+        if batch.resyncRequired or batch.messages.length > 0 or Date/now() >= @deadline
+            if batch.resyncRequired
+                batch.fallback = @route.fallback
+            auth = @authorize
+            return auth(@token, batch)
+        @cursor = batch.cursor
+        @sleep = Promise/withResolvers()
+        sleep = @sleep
+        wake = ()
+            capture sleep
+            sleep.resolve(null)
+        @timer = setTimeout(wake, Math/min(250, Math/max(1, @deadline - Date/now())))
+        return chain sleep.promise
+          then(ignored)
+            return poll()
+
+failure(status, code)
+    return {
+        status: status
+        headers: {
+            "content-type": "application/json; charset=utf-8"
+            "cache-control": "no-store"
+        }
+        body: to_json({
+            error: code
+        })
+    }

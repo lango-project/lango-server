@@ -1,0 +1,58 @@
+import js "node:worker_threads" as threads
+import js global Promise
+import js global setTimeout
+import js global clearTimeout
+
+export class ServerContext()
+    methods
+        publish(path, key, data)
+        cursor(path, key)
+
+ServerContext()
+    return null
+
+ServerContext:publish(path, key, data)
+    return invoke("publish", path, key, data)
+
+ServerContext:cursor(path, key)
+    return invoke("cursor", path, key, null)
+
+invoke(operation, path, key, data)
+    channel = new threads/MessageChannel()
+    port = channel.port1
+    remote = channel.port2
+    pending = new Promise((resolve, reject)
+        capture port
+        port.once("message", (message)
+            capture resolve
+            capture reject
+            if message.ok
+                resolve(message.value)
+              else
+                  reject("Longpoll operation failed")
+        )
+    )
+    expired = Promise/withResolvers()
+    fail = ()
+        capture expired
+        expired.reject("Longpoll operation timed out")
+    timer = setTimeout(fail, 4000)
+    try
+        threads/parentPort/postMessage({
+            kind: "longpoll"
+            operation: operation
+            path: path
+            key: key
+            data: from_json(to_json(data))
+            port: remote
+        }, [remote])
+    catch error
+        port.close()
+        clearTimeout(timer)
+        throw error
+    return chain Promise/race([pending, expired.promise])
+      finally
+        capture port
+        capture timer
+        clearTimeout(timer)
+        port.close()

@@ -1,0 +1,79 @@
+import js global Number
+import js global Object
+import js global process
+import js global URL
+
+export longpollOptions(spec)
+export redisOptions(spec)
+
+longpollOptions(spec)
+    result = {
+        kind: "longpoll"
+        path: spec.path
+        auth: "login"
+        waitTimeoutMs: 20000
+        retentionMs: 300000
+        maxMessages: 1000
+        fallback: null
+    }
+    for spec as key: value
+        if !Object/hasOwn(result, key) or key == "kind"
+            throw "Unknown longpoll option: ${key}"
+        result[key] = value
+    if result.auth == null
+        result.auth = "login"
+    validPath(result.path)
+    if !is_string(result.auth) or result.auth == "" or result.auth.includes(",")
+        throw "Longpoll auth must name one permission"
+    if result.fallback != null
+        validPath(result.fallback)
+    limits = {
+        waitTimeoutMs: 60000
+        retentionMs: 86400000
+        maxMessages: 10000
+    }
+    for limits as key: limit
+        if !is_number(result[key]) and !is_string(result[key])
+            throw "Invalid longpoll option: ${key}"
+        value = Number(result[key])
+        if !Number/isSafeInteger(value) or value < 1 or value > limit
+            throw "Invalid longpoll option: ${key}"
+        result[key] = value
+    return result
+
+validPath(value)
+    if !is_string(value) or !value.startsWith("/") or value.includes("*") or value.includes("?") or value.includes("#") or value.includes("\\") or value.includes("//")
+        throw "Longpoll requires an exact absolute URL path"
+    return null
+
+redisOptions(spec)
+    if spec == null
+        return null
+    if !is_object(spec) or is_array(spec)
+        throw "Redis configuration must be a map"
+    allowed = ["connectionEnv", "namespace", "maxPendingPolls"]
+    for spec as key: value
+        if !allowed.includes(key)
+            throw "Unknown Redis option: ${key}"
+    if !is_string(spec.connectionEnv) or spec.connectionEnv == "" or !is_string(spec.namespace) or spec.namespace == "" or spec.namespace.length > 128
+        throw "Redis requires connectionEnv and namespace"
+    name = spec.connectionEnv
+    value = process.env[name]
+    if !is_string(value) or value == ""
+        throw "Redis connection environment variable is missing"
+    url = new URL(value)
+    protocols = ["redis:", "rediss:"]
+    if !protocols.includes(url.protocol)
+        throw "Redis requires a redis:// or rediss:// URL"
+    maximum = 1024
+    if spec.maxPendingPolls != null
+        if !is_number(spec.maxPendingPolls) and !is_string(spec.maxPendingPolls)
+            throw "Invalid Redis maxPendingPolls"
+        maximum = Number(spec.maxPendingPolls)
+    if !Number/isSafeInteger(maximum) or maximum < 1 or maximum > 10000
+        throw "Invalid Redis maxPendingPolls"
+    return {
+        connectionEnv: spec.connectionEnv
+        namespace: spec.namespace
+        maxPendingPolls: maximum
+    }
