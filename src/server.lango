@@ -43,6 +43,7 @@ Server(path, definition = null)
             settings: deployment(directory)
             routes: routes.definitions()
             events: routes.events()
+            middlewares: routes.middlewares()
         }
     if definition == null
         throw "Use Server(directory) or Builder.build()"

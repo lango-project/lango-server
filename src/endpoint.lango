@@ -1,9 +1,13 @@
+import "./middleware"
+    middlewareName(name)
+
 export class Endpoint(spec)
     properties
         path
         module
         handler
         auth
+        middleware
 
 Endpoint(spec)
     if !is_string(spec.path) or !spec.path.startsWith("/") or spec.path.includes("?") or spec.path.includes("#") or spec.path.includes("\\") or spec.path.includes("//")
@@ -16,6 +20,9 @@ Endpoint(spec)
     @path = spec.path
     @module = spec.module
     @handler = spec.handler
+    @middleware = spec.middleware
+    if @middleware != null
+        middlewareName(@middleware)
     @auth = spec.auth
     if @auth == null
         @auth = "login"

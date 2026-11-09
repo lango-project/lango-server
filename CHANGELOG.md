@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add named worker middleware with Builder registration, root XML declarations,
+  custom endpoint tags and optional endpoint middleware selection.
+- Validate middleware at startup and preserve authorization, contexts, audit,
+  deadlines and SQL cleanup around middleware execution.
 - Add Redis-backed longpoll routes, replay cursors and explicit resync responses.
 - Add Builder/group longpoll configuration and context server publish/cursor APIs.
 - Keep pending polls outside worker/database scopes; recheck authentication before delivery.

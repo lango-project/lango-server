@@ -1,0 +1,147 @@
+import "./payload"
+    class Payload
+import js "node:fs" as fs
+import js "node:worker_threads" as threads
+import js global Promise
+import js global setTimeout
+
+export wrap(handler, path, input)
+export direct(handler, path, input)
+export failAfter(handler, path, input)
+export invalidOutput(handler, path, input)
+export transaction(handler, path, input)
+export block(handler, path, input)
+export business(input)
+export asynchronous(input)
+export empty(input)
+export fail(input)
+export register(input)
+export validate(input)
+export audit(input)
+export global notCallable
+
+global notCallable = 42
+
+wrap(handler, path, input)
+    context request
+    context response
+    context commands = []
+    record("before")
+    response.header("X-Middleware", "yes")
+    commands.add("before:${input.value}")
+    return chain Promise/resolve(handler(input))
+      then(output)
+        capture threads
+        capture request
+        capture commands
+        capture input
+        capture path
+        record("after")
+        commands.add("after:${input.value}")
+        return {
+            view: output
+            cmds: commands.slice()
+            path: path
+            threadId: threads.threadId
+        }
+
+direct(handler, path, input)
+    return new Payload(handler(input))
+
+failAfter(handler, path, input)
+    context token
+    token.AddAuth("admin")
+    return chain wrap(handler, path, input)
+      then(output)
+        throw "Private middleware failure"
+
+invalidOutput(handler, path, input)
+    output = {}
+    output.self = output
+    return output
+
+transaction(handler, path, input)
+    context db
+    start_trans()
+    return wrap(handler, path, input)
+
+block(handler, path, input)
+    loop
+        busy = 1
+
+business(input)
+    context commands
+    context request
+    context token
+    context db
+    record("handler")
+    commands.add("handler:${input.value}")
+    ready = null
+    state = null
+    if db != null
+        query = SQL
+            select 1 as ready
+        query.execute()
+        query.next()
+        ready = query.ready
+        state = trans_state()
+    return {
+        value: input.value
+        path: request.path
+        registered: token.get("registered")
+        database: ready
+        transaction: state
+    }
+
+asynchronous(input)
+    context commands
+    context request
+    context token
+    context db
+    return chain wait(input.ms)
+      then(ignored)
+        capture commands
+        capture request
+        capture token
+        capture db
+        capture input
+        return business(input)
+
+empty(input)
+    return null
+
+fail(input)
+    throw "Private handler failure"
+
+register(input)
+    context token
+    record("register")
+    token.set("registered", true)
+    return null
+
+validate(input)
+    context request
+    record("validate")
+    return request.headers["x-validate"] != "deny"
+
+audit(input)
+    context request
+    file = request.headers["x-audit-file"]
+    if file != null
+        fs/writeFileSync(file, to_json(input))
+    record("audit")
+    return null
+
+record(value)
+    context request
+    file = request.headers["x-record"]
+    if file != null
+        fs/appendFileSync(file, "${value}\n")
+    return null
+
+wait(ms)
+    pending = new Promise((resolve)
+        capture ms
+        setTimeout(resolve, ms)
+    )
+    return pending

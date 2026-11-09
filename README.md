@@ -112,11 +112,12 @@ worker-local, not shared or client-specific. An optional configured SQL database
   dependencies from the including package. Include prefixes concatenate; a
   missing include path mounts at `/`. The same package can be mounted at several
   prefixes. Include cycles, missing exports, and duplicate endpoints fail early.
-* Included files contain routes only. They cannot register global lifecycle
+* Included files contain routes only. They cannot register middleware, global lifecycle
   events or change deployment/JWT settings. Events belong to the application's
   root routes file (or Builder). Each event can be registered once.
-* Unknown XML elements and attributes are rejected. XML and Builder definitions
-  use the same endpoint validation and startup loading path.
+* Custom endpoint tags must name registered middleware. Unknown attributes are
+  rejected. XML and Builder definitions use the same endpoint validation and
+  startup loading path.
 
 A feature package can expose its definitions as follows:
 
@@ -167,12 +168,89 @@ createServer(root, signingKey)
     return builder.build()
 ```
 
-`Builder(root)` defaults to the current directory. `configure`, `endpoint`,
+`Builder(root)` defaults to the current directory. `configure`, `addMiddleware`, `endpoint`,
 `include`, and `event` return the Builder. `group` returns a group supporting
 `endpoint`, nested `group`, and `include`; retain the Builder for `build()`.
 The built Server snapshots definitions; later Builder changes do not affect it.
 `new server/Server(directory)` is the XML equivalent. Routes, Endpoint, worker
 classes, and token implementation classes are internal package details.
+
+## Route middleware
+
+Middleware wraps an application handler inside its worker. Register an exported
+function by module and export name before calling `build()`:
+
+```lango
+builder.addMiddleware("ui", {
+    module: "@shop/middleware"
+    handler: "wrap"
+})
+builder.endpoint({
+    path: "/orders/save"
+    module: "@shop/orders"
+    handler: "save"
+    middleware: "ui"
+})
+```
+
+`Group.endpoint()` accepts the same optional `middleware` field. Omitting it or
+setting it to `null` invokes the application handler directly; middleware is
+not inherited from a group. An endpoint selects one middleware. The registration
+name `ui` is application-defined; the server has no built-in UI dependency.
+
+The XML equivalent uses a declaration in the application's root `routes.xml` and
+the registered name as its endpoint tag:
+
+```xml
+<routes>
+    <ui path="/orders/save" module="@shop/orders" handler="save"/>
+    <middleware name="ui" module="@shop/middleware" handler="wrap"/>
+</routes>
+```
+
+Declarations may appear before or after their routes. Custom tags support the
+same path, module, handler and auth attributes as `endpoint`; group defaults,
+wildcards and include prefixes apply normally. Included packages can use registered
+middleware but cannot declare it, and declarations inside groups are rejected.
+Registration names are server-wide. Duplicate registrations fail, including
+duplicates across XML and programmatic registration on the same route collection.
+Names must match `[A-Za-z_][A-Za-z0-9_-]*`. The names `routes`, `endpoint`,
+`longpoll`, `group`, `include`, `event` and `middleware` are reserved. Longpoll
+routes retain their own transport behavior and do not accept endpoint middleware.
+
+Each worker loads and verifies all registered exports during startup, even unused
+registrations. An unresolved module, missing/non-function export, or route using
+unregistered middleware fails startup. No function or captured closure is
+transferred from the main thread, and no per-request import is needed.
+
+The middleware signature is `wrap(handler, path, input)`: `handler` is the resolved
+application function, `path` is the actual request path including mounted prefixes,
+and `input` is the decoded request object. For example, the registered module can
+transform both synchronous and Promise results:
+
+```lango
+import js global Promise
+
+export wrap(handler, path, input)
+
+wrap(handler, path, input)
+    return chain Promise/resolve(handler(input))
+      then(output)
+        capture path
+        return {
+            path: path
+            result: output
+        }
+```
+
+Middleware runs after Register/Validate and route authorization, with the existing
+request, response, token, log, db and server contexts. It can establish its own
+contexts for the application handler; callbacks retain them using normal Lango
+`capture` rules. It is responsible for invoking the application handler when
+needed and returns the final result, which the server resolves and JSON-serializes
+in the worker. Request events observe that final serialized result. Middleware,
+handler and serialization errors follow the existing error/token behavior;
+request/event deadlines and SQL transaction cleanup still apply.
 
 ## Configuration
 

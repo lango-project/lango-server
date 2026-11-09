@@ -1,0 +1,375 @@
+import js "@lango-project/lango-server" as api
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:crypto" as crypto
+import js "node:assert/strict" as check
+import js global Promise
+import js global Object
+import js global process
+import js global fetch
+import js global Date
+import "../options"
+    options(root, supplied = null)
+import "../tokens"
+    class Tokens
+
+builder(extra = null)
+    result = new api/Builder(process.cwd())
+    settings = {
+        key: "01234567890123456789012345678901"
+        port: 0
+        workers: 1
+        requestTimeoutMs: 1000
+        shutdownTimeoutMs: 1500
+        requestEvent: true
+    }
+    if extra != null
+        Object/assign(settings, extra)
+    result.configure(settings)
+    return result
+
+fixture()
+    return path/resolve(".test-output/middleware_handlers.mjs")
+
+serve(builder, run)
+    server = builder.build()
+    return chain server.start()
+      then(address)
+        capture run
+        return run(address)
+      finally
+        capture server
+        return server.close()
+
+configured(extra = null)
+    result = builder(extra)
+    module = fixture()
+    for ["wrap", "direct", "failAfter", "invalidOutput", "transaction", "block"] as name
+        result.addMiddleware(name, {
+            module: module
+            handler: name
+        })
+    group = result.group({
+        path: "/wrapped"
+        module: module
+        auth: "anonymous"
+    })
+    for ["business", "asynchronous", "empty", "fail"] as name
+        group.endpoint({
+            path: "/${name}"
+            handler: name
+            middleware: "wrap"
+        })
+    for ["direct", "failAfter", "invalidOutput", "transaction", "block"] as name
+        result.endpoint({
+            path: "/${name}"
+            module: module
+            handler: "empty"
+            auth: "anonymous"
+            middleware: name
+        })
+    result.endpoint({
+        path: "/protected"
+        module: module
+        handler: "business"
+        auth: "login"
+        middleware: "wrap"
+    })
+    result.endpoint({
+        path: "/wild/*"
+        module: module
+        handler: "business"
+        auth: "anonymous"
+        middleware: "wrap"
+    })
+    result.endpoint({
+        path: "/plain"
+        module: path/resolve(".test-output/handlers.mjs")
+        handler: "echo"
+        auth: "anonymous"
+    })
+    for ["register", "validate", "request"] as name
+        handler = name
+        if name == "request"
+            handler = "audit"
+        result.event({
+            name: name
+            module: module
+            handler: handler
+        })
+    return result
+
+call(address, route, value = null, headers = null)
+    input = value
+    if input == null
+        input = {}
+    all = {
+        "Content-Type": "application/json"
+    }
+    if headers != null
+        Object/assign(all, headers)
+    return chain fetch("http://127.0.0.1:${address.port}${route}", {
+        method: "POST"
+        headers: all
+        body: to_json(input)
+    })
+      then(res)
+        return chain res.json()
+          then(body)
+            capture res
+            return {
+                status: res.status
+                body: body
+                token: res.headers.get("x-lango-token")
+                marker: res.headers.get("x-middleware")
+            }
+
+recordFile()
+    return path/resolve(".test-output/middleware-${crypto/randomUUID()}.log")
+
+staleToken()
+    config = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+    })
+    service = new Tokens(config)
+    claims = service.create()
+    claims.iat = claims.iat - 5
+    claims.exp = claims.iat + config.ttlSeconds
+    claims.validatedAt = Date/now() - 2000
+    return service.sign(claims)
+
+assertPacket(result, value, route)
+    assert result.status == 200
+    assert result.marker == "yes"
+    assert result.body.path == route
+    assert result.body.threadId > 0
+    assert result.body.view.value == value
+    assert result.body.view.path == route
+    assert result.body.view.registered == true
+    check/deepStrictEqual(result.body.cmds, ["before:${value}", "handler:${value}", "after:${value}"])
+    return null
+
+test "middleware wraps sync handlers in the worker; Request observes the final serialized response"
+    record = recordFile()
+    audit = recordFile()
+    run = (address)
+        capture record
+        capture audit
+        return chain call(address, "/wrapped/business", {
+            value: "sync"
+        }, {
+            "x-record": record
+            "x-audit-file": audit
+        })
+          then(result)
+            capture check
+            capture fs
+            capture record
+            capture audit
+            assertPacket(result, "sync", "/wrapped/business")
+            assert is_string(result.token)
+            assert fs/readFileSync(record, "utf8") == "register\nbefore\nhandler\nafter\naudit\n"
+            metadata = from_json(fs/readFileSync(audit, "utf8"))
+            check/deepStrictEqual(from_json(metadata.output), result.body)
+            return null
+    return chain serve(configured(), run)
+      finally
+        capture fs
+        capture record
+        capture audit
+        fs/rmSync(record, {
+            force: true
+        })
+        fs/rmSync(audit, {
+            force: true
+        })
+
+test "Promise handlers retain middleware context and each request gets fresh commands"
+    run = (address)
+        first = call(address, "/wrapped/asynchronous", {
+            value: "first"
+            ms: 15
+        })
+        second = call(address, "/wrapped/asynchronous", {
+            value: "second"
+            ms: 1
+        })
+        return chain Promise/all([first, second])
+          then(results)
+            capture address
+            assertPacket(results[0], "first", "/wrapped/asynchronous")
+            assertPacket(results[1], "second", "/wrapped/asynchronous")
+            return call(address, "/wrapped/empty", {
+                value: "empty"
+            })
+          then(result)
+            capture check
+            capture address
+            assert result.status == 200
+            assert result.body.view == null
+            check/deepStrictEqual(result.body.cmds, ["before:empty", "after:empty"])
+            return call(address, "/plain", {
+                value: "plain"
+            })
+          then(result)
+            assert result.status == 200
+            assert result.body.value == "plain"
+            assert result.marker == null
+            return null
+    return serve(configured(), run)
+
+test "middleware receives the actual wildcard path and supports synchronous toJSON output"
+    run = (address)
+        return chain call(address, "/wild/actual", {
+            value: "wildcard"
+        })
+          then(result)
+            capture address
+            assertPacket(result, "wildcard", "/wild/actual")
+            return call(address, "/direct")
+          then(result)
+            assert result.status == 200
+            assert result.body.wrapped == null
+            return null
+    return serve(configured(), run)
+
+test "authorization and Validate reject before middleware invocation"
+    record = recordFile()
+    run = (address)
+        capture record
+        return chain call(address, "/protected", {}, {
+            "x-record": record
+        })
+          then(result)
+            capture fs
+            capture address
+            capture record
+            assert result.status == 401
+            assert result.token == null
+            assert fs/readFileSync(record, "utf8") == "register\n"
+            fs/writeFileSync(record, "")
+            return call(address, "/wrapped/business", {}, {
+                Authorization: "Bearer ${staleToken()}"
+                "x-record": record
+                "x-validate": "deny"
+            })
+          then(result)
+            capture fs
+            capture record
+            assert result.status == 401
+            assert fs/readFileSync(record, "utf8") == "validate\n"
+            return null
+    return chain serve(configured(), run)
+      finally
+        capture fs
+        capture record
+        fs/rmSync(record, {
+            force: true
+        })
+
+test "middleware, handler and serialization failures preserve generic errors and discard token changes"
+    run = (address)
+        pending = Promise/resolve(null)
+        for ["/wrapped/fail", "/failAfter", "/invalidOutput"] as route
+            pending = failureRequest(pending, address, route)
+        return chain pending
+          then(ignored)
+            capture address
+            return call(address, "/wrapped/business", {
+                value: "recovered"
+            })
+          then(result)
+            assertPacket(result, "recovered", "/wrapped/business")
+            return null
+    return serve(configured(), run)
+
+failureRequest(pending, address, route)
+    return chain pending
+      then(ignored)
+        capture address
+        capture route
+        return call(address, route)
+      then(result)
+        assert result.status == 500
+        assert result.token == null
+        assert result.body.error == "InternalServerError"
+        return null
+
+test "middleware shares the request SQL scope and unclosed middleware transactions roll back"
+    run = (address)
+        return chain call(address, "/wrapped/asynchronous", {
+            value: "database"
+            ms: 1
+        })
+          then(result)
+            capture address
+            assertPacket(result, "database", "/wrapped/asynchronous")
+            assert result.body.view.database == 1
+            return call(address, "/transaction")
+          then(result)
+            capture address
+            assert result.status == 500
+            assert result.token == null
+            return call(address, "/wrapped/business", {
+                value: "clean"
+            })
+          then(result)
+            assertPacket(result, "clean", "/wrapped/business")
+            assert result.body.view.transaction == null
+            return null
+    return serve(configured({
+        database: {
+            type: "sqlite"
+            file: ":memory:"
+        }
+    }), run)
+
+test "blocking middleware honors the request deadline and the pool recovers"
+    run = (address)
+        return chain call(address, "/block")
+          then(result)
+            capture address
+            assert result.status == 504
+            return call(address, "/wrapped/business", {
+                value: "recovered"
+            })
+          then(result)
+            assertPacket(result, "recovered", "/wrapped/business")
+            return null
+    return serve(configured({
+        requestTimeoutMs: 500
+    }), run)
+
+test "unregistered middleware and invalid registered exports fail startup even when unused"
+    pending = Promise/resolve(null)
+    for ["unregistered", "missing", "notCallable"] as mode
+        pending = startupFailure(pending, mode)
+    return pending
+
+startupFailure(pending, mode)
+    return chain pending
+      then(ignored)
+        capture mode
+        config = builder()
+        if mode != "unregistered"
+            config.addMiddleware("ui", {
+                module: fixture()
+                handler: mode
+            })
+        if mode == "unregistered"
+            config.endpoint({
+                path: "/run"
+                module: fixture()
+                handler: "empty"
+                middleware: "ui"
+            })
+        server = config.build()
+        return chain server.start()
+          then(address)
+            throw "Unexpected middleware startup success"
+          catch(error)
+            assert error != "Unexpected middleware startup success"
+            return null
+          finally
+            capture server
+            return server.close()

@@ -1,0 +1,10 @@
+import js global RegExp
+
+export middlewareName(name)
+
+middlewareName(name)
+    reserved = ["routes", "endpoint", "longpoll", "group", "include", "event", "middleware"]
+    pattern = new RegExp("^[A-Za-z_][A-Za-z0-9_-]*$")
+    if !is_string(name) or !pattern.test(name) or reserved.includes(name)
+        throw "Invalid or reserved middleware name: ${name}"
+    return name

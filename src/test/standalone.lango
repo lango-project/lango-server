@@ -120,19 +120,25 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         fs/cpSync(path/join(root, "examples", "database", "dist"), pkg, {
             recursive: true
         })
+        fs/copyFileSync(path/join(root, ".test-output", "middleware_handlers.mjs"), path/join(pkg, "middleware_handlers.mjs"))
+        fs/copyFileSync(path/join(root, ".test-output", "payload.mjs"), path/join(pkg, "payload.mjs"))
         fs/writeFileSync(path/join(pkg, "package.json"), to_json({
             name: "@lango-test/feature"
             type: "module"
             exports: {
                 ".": "./handlers.mjs"
+                "./middleware": "./middleware_handlers.mjs"
                 "./routes.xml": "./routes.xml"
             }
         }))
         xml = <routes>
-            <endpoint path="/save" module="@lango-test/feature" handler="save" auth="anonymous"/>
+            <wrapped path="/save" module="@lango-test/feature" handler="save" auth="anonymous"/>
         </routes>
         fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
-        xml = <routes><include module="@lango-test/feature" path="/mounted"/></routes>
+        xml = <routes>
+            <include module="@lango-test/feature" path="/mounted"/>
+            <middleware name="wrapped" module="@lango-test/feature/middleware" handler="direct"/>
+        </routes>
         fs/writeFileSync(path/join(dir, "routes.xml"), "${xml}")
         xml = <deploy>
             <http port="0"/>
@@ -144,6 +150,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
             pollRoutes = <routes>
                 <include module="@lango-test/feature" path="/mounted"/>
                 <longpoll path="/updates" auth="anonymous" waitTimeoutMs="20"/>
+                <middleware name="wrapped" module="@lango-test/feature/middleware" handler="direct"/>
             </routes>
             fs/writeFileSync(path/join(dir, "routes.xml"), "${pollRoutes}")
             xml = <deploy>
@@ -179,8 +186,8 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         return res.json()
       then(body)
         capture state
-        assert body.message == "installed"
-        assert is_string(body.id)
+        assert body.wrapped.message == "installed"
+        assert is_string(body.wrapped.id)
         if process.env.LANGO_TEST_REDIS == null
             return null
         return chain fetch("http://127.0.0.1:${state.server.port}/updates", {

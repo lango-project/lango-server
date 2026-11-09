@@ -12,6 +12,7 @@ import "./server"
 export class Builder(root = null)
     methods
         configure(settings)
+        addMiddleware(name, spec)
         endpoint(spec)
         longpoll(spec)
         group(spec)
@@ -29,6 +30,10 @@ Builder(root = null)
 Builder:configure(settings)
     for settings as key: value
         @settings[key] = value
+    return @this
+
+Builder:addMiddleware(name, spec)
+    @routes.addMiddleware(name, spec)
     return @this
 
 Builder:endpoint(spec)
@@ -55,4 +60,5 @@ Builder:build()
         settings: options(@root, @settings)
         routes: @routes.definitions()
         events: @routes.events()
+        middlewares: @routes.middlewares()
     })

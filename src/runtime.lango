@@ -27,11 +27,15 @@ Runtime(definition)
     @events = {}
     @tokens = new Tokens(definition.settings)
     @modules = {}
+    @middlewares = Object/create(null)
     @database = new Database(definition.settings.database, definition.settings.root)
 
 Runtime:preload()
     definitions = @definition.routes
     pending = @database.open()
+    if @definition.middlewares != null
+        for @definition.middlewares as name: spec
+            pending = prepareMiddleware(pending, name, spec)
     for definitions as route
         pending = prepareRoute(pending, route)
     events = @definition.events
@@ -46,6 +50,16 @@ Runtime:close()
     @database.close()
     return null
 
+Runtime:prepareMiddleware(pending, name, spec)
+    return chain pending
+      then(ignored)
+        capture spec
+        return target(spec)
+      then(handler)
+        capture name
+        @middlewares[name] = handler
+        return null
+
 Runtime:prepareRoute(pending, route)
     if route.kind == "longpoll"
         @routes.add(route)
@@ -56,10 +70,17 @@ Runtime:prepareRoute(pending, route)
         return target(route)
       then(handler)
         capture route
+        middleware = null
+        name = route.middleware
+        if name != null
+            if !Object/hasOwn(@middlewares, name)
+                throw "Middleware is not registered: ${name}"
+            middleware = @middlewares[name]
         @routes.add({
             path: route.path
             auth: route.auth
             handler: handler
+            middleware: middleware
         })
         return null
 
@@ -163,6 +184,9 @@ Runtime:handle(task)
         if route.kind == "longpoll"
             return null
         handler = route.handler
+        middleware = route.middleware
+        if middleware != null
+            return middleware(handler, request.path, input)
         return handler(input)
       then(output)
         capture server

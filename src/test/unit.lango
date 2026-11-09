@@ -327,3 +327,162 @@ test "longpoll rejects wildcards, unsafe limits, and missing Redis configuration
         })
         builder.build()
     expectFailure(missing)
+
+test "middleware declarations are order independent and custom routes retain group defaults"
+    dir = fixture()
+    try
+        xml = <routes>
+            <group path="/app" module="./handler.mjs" auth="anonymous">
+                <ui path="/run" handler="run"/>
+            </group>
+            <middleware name="ui" module="./handler.mjs" handler="wrap"/>
+        </routes>
+        file = path/join(dir, "routes.xml")
+        fs/writeFileSync(file, "${xml}")
+        routes = new Routes(dir)
+        routes.xml(file)
+        definitions = routes.definitions()
+        assert definitions[0].path == "/app/run"
+        assert definitions[0].auth == "anonymous"
+        assert definitions[0].middleware == "ui"
+        registered = routes.middlewares()
+        assert registered.ui.handler == "wrap"
+        registered.ui.handler = "changed"
+        current = routes.middlewares()
+        assert current.ui.handler == "wrap"
+        group = new Group(routes, {
+            path: "/group"
+            module: path/join(dir, "handler.mjs")
+            auth: "anonymous"
+        })
+        group.endpoint({
+            path: "/run"
+            handler: "run"
+            middleware: "ui"
+        })
+        definitions = routes.definitions()
+        assert definitions[1].middleware == "ui"
+        assert definitions[1].path == "/group/run"
+        duplicate = ()
+            capture routes
+            routes.addMiddleware("ui", {
+                module: "./handler.mjs"
+                handler: "wrap"
+            })
+        expectFailure(duplicate)
+        nested = <routes>
+            <group path="/nested">
+                <middleware name="other" module="./handler.mjs" handler="wrap"/>
+            </group>
+        </routes>
+        fs/writeFileSync(file, "${nested}")
+        bad = ()
+            capture dir
+            capture file
+            other = new Routes(dir)
+            other.xml(file)
+        expectFailure(bad)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "middleware names, descriptors and XML attributes reject unsupported definitions"
+    dir = fixture()
+    try
+        routes = new Routes(dir)
+        for ["", "routes", "endpoint", "longpoll", "group", "include", "event", "middleware", "bad name", "a:b", 42] as name
+            bad = ()
+                capture routes
+                capture name
+                routes.addMiddleware(name, {
+                    module: "./handler.mjs"
+                    handler: "wrap"
+                })
+            expectFailure(bad)
+        badSpec = ()
+            capture routes
+            routes.addMiddleware("ui", {
+                module: "./handler.mjs"
+                handler: "wrap"
+                typo: true
+            })
+        expectFailure(badSpec)
+        badEndpoint = ()
+            capture routes
+            routes.endpoint({
+                path: "/run"
+                module: "./handler.mjs"
+                handler: "run"
+                middleware: ""
+            })
+        expectFailure(badEndpoint)
+        unknown = <routes><ui path="/run" module="./handler.mjs" handler="run" typo="wrong"/></routes>
+        rejectRoutesXml(dir, unknown)
+        duplicateSelection = <routes><ui path="/run" module="./handler.mjs" handler="run" middleware="other"/></routes>
+        rejectRoutesXml(dir, duplicateSelection)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+
+rejectRoutesXml(dir, xml)
+    file = path/join(dir, "routes.xml")
+    fs/writeFileSync(file, "${xml}")
+    bad = ()
+        capture dir
+        capture file
+        routes = new Routes(dir)
+        routes.xml(file)
+    expectFailure(bad)
+    return null
+
+test "included custom routes share root middleware without permitting package registrations"
+    dir = fixture()
+    try
+        pkg = path/join(dir, "node_modules", "feature")
+        fs/mkdirSync(pkg, {
+            recursive: true
+        })
+        fs/writeFileSync(path/join(pkg, "package.json"), to_json({
+            name: "feature"
+            exports: {
+                ".": "./handler.mjs"
+                "./routes.xml": "./routes.xml"
+            }
+        }))
+        fs/writeFileSync(path/join(pkg, "handler.mjs"), "")
+        included = <routes><ui path="/run" module="feature" handler="run"/></routes>
+        fs/writeFileSync(path/join(pkg, "routes.xml"), "${included}")
+        root = <routes>
+            <group path="/app" auth="anonymous">
+                <include module="feature" path="/a"/>
+                <include module="feature" path="/b"/>
+            </group>
+            <middleware name="ui" module="./handler.mjs" handler="wrap"/>
+        </routes>
+        file = path/join(dir, "routes.xml")
+        fs/writeFileSync(file, "${root}")
+        routes = new Routes(dir)
+        routes.xml(file)
+        definitions = routes.definitions()
+        assert definitions[0].path == "/app/a/run"
+        assert definitions[1].path == "/app/b/run"
+        assert definitions[0].middleware == "ui"
+        assert definitions[1].auth == "anonymous"
+        forbidden = <routes><middleware name="ui" module="feature" handler="wrap"/></routes>
+        fs/writeFileSync(path/join(pkg, "routes.xml"), "${forbidden}")
+        bad = ()
+            capture dir
+            capture file
+            other = new Routes(dir)
+            other.xml(file)
+        expectFailure(bad)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })

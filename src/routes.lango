@@ -5,6 +5,9 @@ import js "node:path" as path
 import js "node:module" as modules
 import "./options"
     attributes(tag, allowed)
+import js global Object
+import "./middleware"
+    middlewareName(name)
 import "./endpoint"
     class Endpoint
 
@@ -14,6 +17,8 @@ import "./longpoll_options"
 export class Routes(root)
     methods
         endpoint(spec)
+        addMiddleware(name, spec)
+        middlewares()
         longpoll(spec)
         include(spec, auth = null)
         xml(file)
@@ -25,6 +30,7 @@ Routes(root)
     @root = path/resolve(root)
     @items = []
     @events = {}
+    @middlewares = Object/create(null)
 
 Routes:endpoint(spec)
     item = new Endpoint(spec)
@@ -36,8 +42,29 @@ Routes:endpoint(spec)
         module: resolveModule(item.module, @root)
         handler: item.handler
         auth: item.auth
+        middleware: item.middleware
     })
     return @this
+
+Routes:addMiddleware(name, spec)
+    middlewareName(name)
+    if Object/hasOwn(@middlewares, name)
+        throw "Duplicate middleware: ${name}"
+    if !is_object(spec) or is_array(spec)
+        throw "Middleware requires a module and exported handler"
+    for spec as key: value
+        if key != "module" and key != "handler"
+            throw "Unknown middleware option: ${key}"
+    if !is_string(spec.handler) or spec.handler == ""
+        throw "Middleware handler is required"
+    @middlewares[name] = {
+        module: resolveModule(spec.module, @root)
+        handler: spec.handler
+    }
+    return @this
+
+Routes:middlewares()
+    return from_json(to_json(@middlewares))
 
 Routes:longpoll(spec)
     item = longpollOptions(spec)
@@ -160,6 +187,15 @@ Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack,
               attributes(tag, ["module", "path"])
               leaf(tag)
               includeAt(spec, directory, prefix, stack, auth)
+          case "middleware"
+              attributes(tag, ["name", "module", "handler"])
+              leaf(tag)
+              if !allowEvents
+                  throw "Middleware declarations are only allowed in the application's root routes.xml"
+              addMiddleware(spec.name, {
+                  module: resolveModule(spec.module, directory)
+                  handler: spec.handler
+              })
           case "event"
               attributes(tag, ["name", "module", "handler"])
               leaf(tag)
@@ -171,7 +207,15 @@ Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack,
                   handler: spec.handler
               })
           else
-              throw "Unknown routes element: ${tag.tag()}"
+              attributes(tag, ["path", "module", "handler", "auth"])
+              leaf(tag)
+              endpoint({
+                  path: joinPath(prefix, spec.path)
+                  module: resolveModule(mod, directory)
+                  handler: spec.handler
+                  auth: auth
+                  middleware: tag.tag()
+              })
     return null
 
 leaf(tag)

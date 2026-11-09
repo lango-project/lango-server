@@ -33,6 +33,7 @@ Group:endpoint(spec)
         module: mod
         handler: spec.handler
         auth: auth
+        middleware: spec.middleware
     })
     return @this
 
