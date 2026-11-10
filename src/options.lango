@@ -2,6 +2,8 @@ import "./longpoll_options"
     redisOptions(spec)
 import "./database_options"
     databaseOptions(root, spec, workers)
+import "./static_files"
+    staticOptions(root, spec)
 import js "node:fs" as fs
 import js "node:path" as path
 import js global Object
@@ -41,6 +43,7 @@ options(root, supplied = null)
         requestEvent: false
         database: null
         redis: null
+        static: null
     }
     if supplied != null
         for supplied as key: value
@@ -78,6 +81,7 @@ options(root, supplied = null)
     result.key = null
     result.database = databaseOptions(result.root, result.database, result.workers)
     result.redis = redisOptions(result.redis)
+    result.static = staticOptions(result.root, result.static)
     return result
 
 deployment(directory)
@@ -94,6 +98,10 @@ deployment(directory)
             throw "Duplicate or nonempty deployment section: ${name}"
         seen.add(name)
         switch name
+          case "static"
+              attributes(tag, ["path", "directory", "index"])
+              settings.static = tag.attributes()
+              continue
           case "http"
               attributes(tag, ["host", "port", "bodyLimit", "bodyTimeoutMs"])
           case "workers"

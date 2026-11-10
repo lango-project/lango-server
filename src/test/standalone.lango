@@ -142,6 +142,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         fs/writeFileSync(path/join(dir, "routes.xml"), "${xml}")
         xml = <deploy>
             <http port="0"/>
+            <static directory="./public"/>
             <database type="sqlite" file="data/app.sqlite"/>
             <workers workers="2"/>
             <jwt keyEnv="LANGO_JWT_KEY"/>
@@ -155,11 +156,14 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
             fs/writeFileSync(path/join(dir, "routes.xml"), "${pollRoutes}")
             xml = <deploy>
                 <http port="0"/>
+                <static directory="./public"/>
                 <database type="sqlite" file="data/app.sqlite"/>
                 <workers workers="2"/>
                 <jwt keyEnv="LANGO_JWT_KEY"/>
                 <redis connectionEnv="LANGO_TEST_REDIS" namespace="packed-test"/>
             </deploy>
+        fs/mkdirSync(path/join(dir, "public"))
+        fs/writeFileSync(path/join(dir, "public", "index.html"), "<!doctype html><title>Installed</title>")
         fs/writeFileSync(path/join(dir, "deploy.xml"), "${xml}")
     catch error
         fs/rmSync(dir, {
@@ -171,6 +175,14 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
       then(server)
         capture state
         state.server = server
+        return fetch("http://127.0.0.1:${state.server.port}/")
+      then(res)
+        assert res.status == 200
+        assert res.headers.get("x-lango-token") == null
+        return res.text()
+      then(html)
+        capture state
+        assert html == "<!doctype html><title>Installed</title>"
         return fetch("http://127.0.0.1:${state.server.port}/mounted/save", {
             method: "POST"
             headers: {

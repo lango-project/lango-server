@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add optional static GET/HEAD serving with deployment and Builder configuration,
+  unchanged HTML, conditional requests and byte ranges outside the worker pool.
+- Initialize file-backed SQLite before opening workers to avoid concurrent WAL
+  initialization during startup.
 - Add named worker middleware with Builder registration, root XML declarations,
   custom endpoint tags and optional endpoint middleware selection.
 - Validate middleware at startup and preserve authorization, contexts, audit,

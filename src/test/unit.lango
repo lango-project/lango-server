@@ -62,6 +62,7 @@ test "deployment XML resolves environment keys and rejects typos"
         process.env.LANGO_SERVER_TEST_KEY = "01234567890123456789012345678901"
         xml = <deploy>
             <http port="0"/>
+            <static path="/assets" directory="./public" index="home.html"/>
             <workers workers="1" maxQueue="0"/>
             <events requestEvent="true" eventTimeoutMs="250"/>
             <jwt keyEnv="LANGO_SERVER_TEST_KEY"/>
@@ -72,6 +73,9 @@ test "deployment XML resolves environment keys and rejects typos"
         assert config.port == 0
         assert config.workers == 1
         assert config.requestEvent == true
+        assert config.static.path == "/assets"
+        assert config.static.directory == path/join(dir, "public")
+        assert config.static.index == "home.html"
         xml = <deploy><workers typo="1"/></deploy>
         fs/writeFileSync(file, "${xml}")
         action = ()
@@ -83,6 +87,47 @@ test "deployment XML resolves environment keys and rejects typos"
             recursive: true
             force: true
         })
+
+test "static configuration defaults are optional and unsafe or unknown settings fail"
+    assert settings().static == null
+    config = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+        static: {
+            directory: "public"
+        }
+    })
+    assert config.static.path == "/"
+    assert config.static.index == "index.html"
+    assert config.static.directory == path/resolve("public")
+    cases = []
+    cases.add([])
+    cases.add({
+        directory: ""
+    })
+    cases.add({
+        directory: "public"
+        path: "relative"
+    })
+    cases.add({
+        directory: "public"
+        path: "/../outside"
+    })
+    cases.add({
+        directory: "public"
+        index: "../private"
+    })
+    cases.add({
+        directory: "public"
+        handler: "started"
+    })
+    for cases as spec
+        action = ()
+            capture spec
+            options(process.cwd(), {
+                key: "01234567890123456789012345678901"
+                static: spec
+            })
+        expectFailure(action)
 
 test "route XML groups inherit module and auth; duplicate paths and missing modules fail"
     dir = fixture()

@@ -24,6 +24,8 @@ import "./routes"
     class Routes
 import "./body_reader"
     class BodyReader
+import "./static_files"
+    class StaticFiles
 
 export main(args)
 
@@ -62,6 +64,7 @@ Server(path, definition = null)
     @ready = Promise/withResolvers()
     @readyIds = []
     @destroying = false
+    @static = null
 
 pathJoin(directory, file)
     return path/join(directory, file)
@@ -85,7 +88,16 @@ Server:start()
 
 Server:launch()
     settings = @definition.settings
+    if settings.static != null
+        try
+            @static = new StaticFiles(settings.static)
+        catch error
+            @state = "closed"
+            return Promise/reject(error)
     return chain @broker.open()
+      then(ignored)
+        capture settings
+        return prepareDatabase(settings.database)
       then(ignored)
         capture path
         capture modules
@@ -240,8 +252,16 @@ Server:receive(req, res)
     )
     if @state != "running"
         return rejectHttp(req, res, 503, "Unavailable")
+    if @static != null and (req.method == "GET" or req.method == "HEAD")
+        failed = (status, code)
+            capture res
+            send(res, failure(status, code))
+        return @static.receive(req, res, failed)
     if req.method != "POST"
-        res.setHeader("Allow", "POST")
+        allowed = "POST"
+        if @static != null
+            allowed = "GET, HEAD, POST"
+        res.setHeader("Allow", allowed)
         return rejectHttp(req, res, 405, "MethodNotAllowed")
     if req.url.includes("?") or req.url.includes("#") or req.url.includes("\\")
         return rejectHttp(req, res, 400, "InvalidPath")

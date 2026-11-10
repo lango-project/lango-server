@@ -1,0 +1,176 @@
+import js "@lango-project/lango-server" as api
+import js "node:fs" as fs
+import js "node:path" as path
+import js global process
+import js global fetch
+import js global Promise
+
+fixture()
+    dir = fs/mkdtempSync(path/resolve(".test-output/static-"))
+    assets = path/join(dir, "public")
+    fs/mkdirSync(assets)
+    fs/mkdirSync(path/join(assets, "empty"))
+    fs/writeFileSync(path/join(assets, "index.html"), "<!doctype html><title>Plain page</title>")
+    fs/writeFileSync(path/join(assets, "app.js"), "hello world")
+    fs/writeFileSync(path/join(assets, ".secret"), "private")
+    fs/writeFileSync(path/join(dir, "outside.txt"), "outside")
+    return dir
+
+configured(dir, mount)
+    builder = new api/Builder(process.cwd())
+    builder.configure({
+        key: "01234567890123456789012345678901"
+        port: 0
+        workers: 1
+        static: {
+            path: mount
+            directory: path/join(dir, "public")
+        }
+    })
+    builder.endpoint({
+        path: "/"
+        module: path/resolve(".test-output/handlers.mjs")
+        handler: "echo"
+        auth: "anonymous"
+    })
+    return builder.build()
+
+request(address, url, spec = null)
+    return chain fetch("http://127.0.0.1:${address.port}${url}", spec)
+      then(res)
+        return chain res.text()
+          then(body)
+            capture res
+            return {
+                status: res.status
+                headers: res.headers
+                body: body
+            }
+
+withServer(mount, run)
+    dir = fixture()
+    server = configured(dir, mount)
+    return chain server.start()
+      then(address)
+        capture run
+        return run(address)
+      finally
+        capture server
+        return server.close()
+      finally
+        capture fs
+        capture dir
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "static GET and HEAD preserve HTML and keep POST at the same path independent"
+    run = (address)
+        return chain request(address, "/")
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body == "<!doctype html><title>Plain page</title>"
+            assert result.headers.get("content-type").includes("text/html")
+            assert result.headers.get("x-lango-token") == null
+            return request(address, "/", {
+                method: "HEAD"
+            })
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body == ""
+            assert result.headers.get("x-lango-token") == null
+            return request(address, "/", {
+                method: "POST"
+                headers: {
+                    "Content-Type": "application/json"
+                }
+                body: to_json({
+                    value: "rpc"
+                })
+            })
+          then(result)
+            assert result.status == 200
+            assert from_json(result.body).value == "rpc"
+            assert is_string(result.headers.get("x-lango-token"))
+            return null
+    return withServer("/", run)
+
+test "mounted files support queries, ranges and conditional requests"
+    run = (address)
+        return chain request(address, "/assets/app.js?v=1")
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body == "hello world"
+            return request(address, "/assets/app.js", {
+                cache: "no-cache"
+                headers: {
+                    "If-None-Match": result.headers.get("etag")
+                }
+            })
+          then(result)
+            capture address
+            assert result.status == 304
+            assert result.body == ""
+            return request(address, "/assets/app.js", {
+                headers: {
+                    Range: "bytes=0-4"
+                }
+            })
+          then(result)
+            capture address
+            assert result.status == 206
+            assert result.body == "hello"
+            return request(address, "/assets/")
+          then(result)
+            assert result.status == 200
+            assert result.body.includes("Plain page")
+            return null
+    return withServer("/assets", run)
+
+test "static serving rejects traversal and dotfiles without listing or SPA fallback"
+    run = (address)
+        pending = Promise/resolve(null)
+        for ["/missing", "/assets-other/app.js", "/assets/empty/", "/assets/missing", "/assets/.secret", "/assets/%2e%2e%2foutside.txt", "/assets/%ZZ"] as url
+            pending = rejected(pending, address, url)
+        return pending
+    return withServer("/assets", run)
+
+rejected(pending, address, url)
+    return chain pending
+      then(ignored)
+        capture address
+        capture url
+        return request(address, url)
+      then(result)
+        assert result.status >= 400 and result.status < 500
+        assert result.headers.get("x-lango-token") == null
+        assert !result.body.includes("Plain page")
+        assert !result.body.includes("outside")
+        return null
+
+test "a missing static directory fails startup before accepting connections"
+    dir = fixture()
+    server = configured(dir, "/")
+    fs/rmSync(path/join(dir, "public"), {
+        recursive: true
+    })
+    return chain server.start()
+      then(address)
+        throw "Unexpected startup success"
+      catch(error)
+        assert error != "Unexpected startup success"
+        return null
+      finally
+        capture server
+        return server.close()
+      finally
+        capture fs
+        capture dir
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })

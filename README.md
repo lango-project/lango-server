@@ -80,6 +80,40 @@ Lango's explicit `capture` rules; capture any contexts needed by later callbacks
 Workers retain their loaded modules between requests. Module-level state is
 worker-local, not shared or client-specific. An optional configured SQL database is available through `context db`; application schema and migrations remain application-owned.
 
+## Static files
+
+Static serving is optional. Add a section to `deploy.xml`:
+
+```xml
+<static path="/" directory="./public" index="index.html"/>
+```
+
+Or configure the same settings with a Builder:
+
+```lango
+builder.configure({
+    static: {
+        path: "/"
+        directory: "./public"
+        index: "index.html"
+    }
+})
+```
+
+`directory` is required and resolves against the application directory. The URL
+prefix defaults to `/`; `index` defaults to `index.html`. The directory must
+exist when the server starts. Only one static root is supported.
+
+GET and HEAD stream files in the main thread without reserving a worker or
+creating a token. HTML is served unchanged. File responses support conditional
+requests and byte ranges through `serve-static`. Query strings are allowed for
+static assets. Missing files and directories without an index return 404;
+directory listings and SPA fallbacks are not enabled. Dotfiles are denied.
+
+POST requests retain the normal JSON worker pipeline, including at `/`. Static
+serving alone does not reserve that POST path or install UI lifecycle handlers.
+JWT authorization applies to POST handlers; static files are public.
+
 ## Routes
 
 ```xml

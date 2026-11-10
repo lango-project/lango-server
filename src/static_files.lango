@@ -1,0 +1,90 @@
+import js "node:fs" as fs
+import js "node:path" as path
+import js "serve-static" as files
+import js global RegExp
+
+export staticOptions(root, spec)
+export class StaticFiles(settings)
+    methods
+        receive(req, res, failed)
+
+staticOptions(root, spec)
+    if spec == null
+        return null
+    if !is_object(spec) or is_array(spec)
+        throw "static must be a map"
+    allowed = ["path", "directory", "index"]
+    for spec as key: value
+        if !allowed.includes(key)
+            throw "Unknown static option: ${key}"
+    mount = spec.path
+    if mount == null
+        mount = "/"
+    pattern = new RegExp("^/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]*$")
+    if !is_string(mount) or !pattern.test(mount)
+        throw "Static path must be an absolute URL prefix"
+    if mount != "/" and mount.endsWith("/")
+        mount = mount.slice(0, -1)
+    if !is_string(spec.directory) or spec.directory.trim() == ""
+        throw "Static directory is required"
+    index = spec.index
+    if index == null
+        index = "index.html"
+    if !is_string(index) or index == "" or index.startsWith(".") or index.includes("/") or index.includes("\\")
+        throw "Static index must be a file name"
+    return {
+        path: mount
+        directory: path/resolve(root, spec.directory)
+        index: index
+    }
+
+StaticFiles(settings)
+    @settings = settings
+    if !fs/statSync(settings.directory).isDirectory()
+        throw "Static directory must be a directory"
+    @serve = files/default(settings.directory, {
+        index: settings.index
+        dotfiles: "deny"
+        fallthrough: false
+        redirect: false
+    })
+
+StaticFiles:receive(req, res, failed)
+    mount = @settings.path
+    url = req.url
+    pathname = url.split("?")[0]
+    if mount != "/" and pathname != mount and !pathname.startsWith("${mount}/")
+        failed(404, "NotFound")
+        return null
+    if mount != "/"
+        req.url = url.slice(mount.length)
+        if req.url == "" or req.url.startsWith("?")
+            req.url = "/${req.url}"
+    done = (error)
+        capture res
+        capture failed
+        if res.headersSent
+            res.destroy()
+            return null
+        status = 404
+        code = "NotFound"
+        if error != null
+            switch error.status
+              case 400
+                  status = 400
+                  code = "InvalidPath"
+              case 403
+                  status = 403
+                  code = "Forbidden"
+              case 416
+                  status = 416
+                  code = "RangeNotSatisfiable"
+              case 404
+                  status = 404
+              else
+                  status = 500
+                  code = "InternalServerError"
+        failed(status, code)
+    serve = @serve
+    serve(req, res, done)
+    return null
