@@ -2,11 +2,14 @@ import js "node:http" as http
 
 import "./options"
     contains(items, value)
+import "./http_failure"
+    class HttpFailure
 export class Response()
     methods
         status(code)
         header(name, value)
         result(body)
+        reject(status, code)
 
 Response()
     @status = 200
@@ -40,3 +43,6 @@ Response:result(body)
         headers: from_json(to_json(@headers))
         body: body
     }
+
+Response:reject(status, code)
+    throw new HttpFailure(status, code, @headers)

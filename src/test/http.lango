@@ -27,7 +27,7 @@ withServer(extra, run)
     Object/assign(settings, extra)
     builder.configure(settings)
     module = path/resolve(".test-output/handlers.mjs")
-    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized"] as name
+    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized", "renew"] as name
         builder.endpoint({
             path: "/${name}"
             module: module
@@ -100,6 +100,7 @@ call(address, endpoint, input = null, token = null, extra = null)
                 body: body
                 token: res.headers.get("x-lango-token")
                 marker: res.headers.get("x-example")
+                retry: res.headers.get("retry-after")
             }
 
 staleToken()
@@ -595,4 +596,73 @@ test "chunked bodies honor byte limits and stalled uploads honor body deadlines"
     return withServer({
         bodyLimit: 100
         bodyTimeoutMs: 50
+    }, run)
+
+test "explicit renewal extends only successful requests and rejects expiration during the handler"
+    config = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+    })
+    service = new Tokens(config)
+    signed = staleToken()
+    original = service.read("Bearer ${signed}")
+    run = (address)
+        capture signed
+        return chain call(address, "/echo", {}, signed)
+          then(result)
+            capture signed
+            capture original
+            capture service
+            capture address
+            assert result.status == 200
+            unchanged = service.read("Bearer ${result.token}")
+            assert unchanged.exp == original.exp
+            return call(address, "/renew", {}, signed)
+          then(result)
+            capture signed
+            capture original
+            capture service
+            capture address
+            assert result.status == 200
+            renewed = service.read("Bearer ${result.token}")
+            assert renewed.exp > original.exp
+            assert renewed.clientId == original.clientId
+            return call(address, "/renew", {
+                mode: "reject"
+            }, signed)
+          then(result)
+            capture signed
+            capture address
+            assert result.status == 429
+            assert result.body.error == "RenewalRejected"
+            assert result.retry == "60"
+            assert result.token == null
+            return call(address, "/renew", {
+                mode: "throw"
+            }, signed)
+          then(result)
+            capture signed
+            capture address
+            assert result.status == 500
+            assert result.token == null
+            return call(address, "/renew", {
+                mode: "circular"
+            }, signed)
+          then(result)
+            capture service
+            capture address
+            assert result.status == 500
+            assert result.token == null
+            short = service.create()
+            short.exp = short.iat + 1
+            token = service.sign(short)
+            return call(address, "/renew", {
+                mode: "delay"
+                ms: 1200
+            }, token)
+          then(result)
+            assert result.status == 401
+            assert result.token == null
+            return null
+    return withServer({
+        requestTimeoutMs: 4000
     }, run)

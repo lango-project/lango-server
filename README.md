@@ -334,8 +334,14 @@ timestamps are checked. Keys are never generated or stored by the server.
 
 Handlers and events can declare `context request`, `response`, `token`, and `log`.
 Request metadata is read-only: `id`, `method`, `path`, `headers`, `remoteAddress`.
-Response supports `status(code)` and `header(name, value)`; the handler return
-value supplies its JSON body. Transport/token headers remain server-owned.
+Response supports `status(code)`, `header(name, value)` and `reject(status, code)`;
+the handler return value supplies its JSON body. Transport/token headers remain
+server-owned. `reject` throws a controlled HTTP failure (400–599) with a short
+error code, for example `response.reject(400, "InvalidInput")`. Codes start with
+an ASCII letter and contain at most 64 letters, digits or underscores. Configured
+response headers are preserved. Rejections roll back open SQL transactions and
+send `{ error: code }` without a token; committed side effects are not undone.
+Unexpected exceptions still produce a generic 500.
 
 Tokens arrive in `Authorization: Bearer <jwt>` and successful replies contain
 `X-Lango-Token`. Missing tokens create an anonymous identity with a UUID
@@ -349,6 +355,8 @@ Unauthorized requests do not receive a newly created token.
 * `AddAuth("login")`, `clearAuth()`, `hasAuth("admin")`: exact trimmed membership.
 * `get(name)`, `set(name, value)`: JSON custom claims; server-owned JWT fields are
   protected. `get` returns a copy for structured values.
+* `renew()`: requests renewal after successful serialization and SQL cleanup on
+  a reply with a status below 400. It does not immediately change `expiresAt`.
 
 Default endpoint auth is `login`. `auth="anonymous"` permits anonymous callers;
 other values require that exact permission. `admin` does not imply `login`.
@@ -360,6 +368,15 @@ succeed. Validation updates preserve the original token expiry. `clearAuth()`
 updates the returned token; it does not invalidate previously issued copies.
 Use application-owned storage and Validate to enforce logout/revocation across
 old tokens. There is no built-in session database or UI replay protocol.
+
+Renewal sets the new JWT's `iat` to the current second and `exp` to that value
+plus `ttlSeconds`. Identity, permissions and custom claims are retained. The
+timestamp of the last actual Validate result is preserved, so it may precede
+the renewed token's issuance time. Renewal does not fake a fresh validation.
+Read-only event tokens cannot request renewal. Expiration is checked again
+before renewal and signing; an expired token cannot be revived. Failed or
+rejected requests publish no renewal. Previously issued tokens remain valid
+until their own expiry unless the application's Validate policy revokes them.
 
 ## Events
 

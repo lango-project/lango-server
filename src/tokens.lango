@@ -10,6 +10,7 @@ export class Tokens(settings)
         read(header)
         sign(claims)
         create()
+        renew(claims)
 
 Tokens(settings)
     @settings = settings
@@ -52,9 +53,18 @@ Tokens:read(header)
         throw "InvalidToken"
     if !Number/isSafeInteger(claims.iat) or !Number/isSafeInteger(claims.exp) or claims.exp <= claims.iat or claims.exp - claims.iat > settings.ttlSeconds or claims.iat * 1000 > Date/now()
         throw "InvalidToken"
-    if !Number/isSafeInteger(claims.validatedAt) or claims.validatedAt < claims.iat * 1000 or claims.validatedAt > Date/now()
+    if !Number/isSafeInteger(claims.validatedAt) or claims.validatedAt < 0 or claims.validatedAt > Date/now()
         throw "InvalidToken"
     return claims
+
+Tokens:renew(claims)
+    if claims.exp * 1000 <= Date/now()
+        throw "TokenExpired"
+    updated = from_json(to_json(claims))
+    now = Math/floor(Date/now() / 1000)
+    updated.iat = now
+    updated.exp = now + @settings.ttlSeconds
+    return updated
 
 Tokens:sign(claims)
     settings = @settings

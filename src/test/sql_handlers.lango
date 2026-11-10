@@ -12,6 +12,7 @@ global retained = null
 handle(input)
     context db
     context token
+    context response
     global retained
     switch input.action
       case "schema"
@@ -34,6 +35,10 @@ handle(input)
           start_trans()
           insert(input)
           return lookup(input.id)
+      case "reject"
+          start_trans()
+          insert(input)
+          return response.reject(409, "Conflict")
       case "throw"
           start_trans()
           insert(input)

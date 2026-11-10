@@ -13,6 +13,8 @@ import "./tokens"
     class Tokens
 import "./response"
     class Response
+import "./http_failure"
+    class HttpFailure
 
 export class Runtime(definition)
     methods
@@ -209,8 +211,7 @@ Runtime:handle(task)
         capture claims
         if task.authorize == true
             closeScope(db, true)
-            authorizedClaims = token.snapshot()
-            authorizedClaims.validatedAt = claims.validatedAt
+            authorizedClaims = tokenClaims(token, claims, true)
             encoded = @tokens.sign(authorizedClaims)
             if task.pollResult == null
                 return {
@@ -230,8 +231,7 @@ Runtime:handle(task)
             throw "Handler result is not JSON serializable"
         closeScope(db, true)
         result = response.result(body)
-        updated = token.snapshot()
-        updated.validatedAt = claims.validatedAt
+        updated = tokenClaims(token, claims, result.status < 400)
         result.headers["x-lango-token"] = @tokens.sign(updated)
         if @definition.settings.requestEvent and "request" in @events
             return audit(request.id, result, task.body, body, updated)
@@ -241,7 +241,10 @@ Runtime:handle(task)
         capture request
         capture log
         capture db
+        capture HttpFailure
         closeScope(db, false)
+        if is_kindof(error, HttpFailure)
+            return error.result()
         if error == "TokenExpired" or (is_object(error) and error.status == 401)
             return failure(401, "Unauthorized")
         log.err("[${request.id}] Request failed")
@@ -249,6 +252,13 @@ Runtime:handle(task)
       finally
         capture db
         closeScope(db, false)
+
+Runtime:tokenClaims(token, claims, allowRenewal)
+    updated = token.snapshot()
+    updated.validatedAt = claims.validatedAt
+    if allowRenewal and token.renewalRequested()
+        updated = @tokens.renew(updated)
+    return updated
 
 Runtime:event(name, input)
     if !(name in @events)

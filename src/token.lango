@@ -14,10 +14,13 @@ export class Token(claims, readonly = false)
         get(name)
         set(name, value)
         snapshot()
+        renew()
+        renewalRequested()
 
 Token(claims, readonly = false)
     @claims = from_json(to_json(claims))
     @readonly = readonly
+    @renew = false
     @clientId = claims.clientId
     @auth = claims.auth
     @expiresAt = claims.exp
@@ -63,6 +66,14 @@ Token:snapshot()
         throw "Token identity and expiry cannot be changed"
     claims.auth = @auth
     return claims
+
+Token:renew()
+    writable()
+    @renew = true
+    return @this
+
+Token:renewalRequested()
+    return @renew
 
 Token:writable()
     if @readonly

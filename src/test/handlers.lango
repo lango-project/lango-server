@@ -18,6 +18,7 @@ export pause(input)
 export crash(input)
 export circular(input)
 export serialized(input)
+export renew(input)
 
 
 echo(input)
@@ -53,6 +54,23 @@ fail(input)
     context token
     token.AddAuth("admin")
     throw "Private failure detail"
+
+renew(input)
+    context token
+    context response
+    token.renew()
+    switch input.mode
+      case "throw"
+          throw "Private renewal failure"
+      case "reject"
+          response.header("Retry-After", "60")
+          return response.reject(429, "RenewalRejected")
+      case "circular"
+          return circular(input)
+      case "delay"
+          return pause(input)
+      else
+          return echo(input)
 
 register(input)
     context request

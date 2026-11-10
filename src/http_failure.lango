@@ -1,0 +1,26 @@
+import js global RegExp
+
+export class HttpFailure(status, code, headers)
+    methods
+        result()
+
+HttpFailure(status, code, headers)
+    if !is_number(status) or status % 1 != 0 or status < 400 or status > 599
+        throw "Rejected response requires an error status"
+    pattern = new RegExp("^[A-Za-z][A-Za-z0-9_]{0,63}$")
+    if !is_string(code) or !pattern.test(code)
+        throw "Rejected response requires an error code"
+    @status = status
+    @code = code
+    @headers = from_json(to_json(headers))
+    if status == 401
+        @headers["www-authenticate"] = "Bearer"
+
+HttpFailure:result()
+    return {
+        status: @status
+        headers: from_json(to_json(@headers))
+        body: to_json({
+            error: @code
+        })
+    }

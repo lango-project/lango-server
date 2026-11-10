@@ -554,3 +554,39 @@ test "server route metadata is an independent snapshot without module or handler
     route.path = "/changed"
     second = server.routes()
     assert second[0].path == "/ui"
+
+test "token renewal preserves identity and the last real validation timestamp"
+    config = settings()
+    service = new Tokens(config)
+    claims = service.create()
+    claims.iat = claims.iat - 120
+    claims.exp = claims.iat + config.ttlSeconds
+    claims.validatedAt = Date/now() - 100000
+    token = new Token(claims)
+    token.AddAuth("login")
+    token.set("sessionId", "session")
+    assert token.renew() == token
+    assert token.renewalRequested()
+    before = token.snapshot()
+    assert before.exp == claims.exp
+    updated = service.renew(before)
+    assert updated.exp > before.exp
+    assert updated.clientId == before.clientId
+    assert updated.sessionId == "session"
+    assert updated.auth == "login"
+    assert updated.validatedAt == before.validatedAt
+    checked = service.read("Bearer ${service.sign(updated)}")
+    assert checked.exp == updated.exp
+    assert checked.validatedAt == before.validatedAt
+    readonly = ()
+        capture claims
+        locked = new Token(claims, true)
+        locked.renew()
+    expectFailure(readonly)
+    expired = ()
+        capture claims
+        capture service
+        old = from_json(to_json(claims))
+        old.exp = 1
+        service.renew(old)
+    expectFailure(expired)

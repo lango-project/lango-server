@@ -345,3 +345,32 @@ validationScenario(address, id)
         capture id
         assert result.status == 200
         return failureScenario(address, id)
+
+test "controlled HTTP rejection rolls back its SQL scope without publishing a token"
+    run = (address)
+        return chain call(address, {
+            action: "schema"
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            return call(address, {
+                action: "reject"
+                id: "rejected"
+                value: "must roll back"
+                amount: "1"
+            })
+          then(result)
+            capture address
+            assert result.status == 409
+            assert result.body.error == "Conflict"
+            assert result.token == null
+            return call(address, {
+                action: "select"
+                id: "rejected"
+            })
+          then(result)
+            assert result.status == 200
+            assert result.body == null
+            return null
+    return withDatabase(run)

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add deferred token renewal on successful requests, preserving identity and
+  the actual validation timestamp and rejecting expiry during the handler.
+- Add controlled response rejection with explicit HTTP error codes, preserved
+  headers, SQL rollback and no published token.
 - Add optional middleware startup validators and independent route metadata
   snapshots through the worker's server context.
 - Add optional static GET/HEAD serving with deployment and Builder configuration,
