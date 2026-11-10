@@ -1,0 +1,15 @@
+export routeInfo(definitions)
+
+routeInfo(definitions)
+    result = []
+    for definitions as route
+        kind = route.kind
+        if kind == null
+            kind = "endpoint"
+        result.add({
+            path: route.path
+            kind: kind
+            auth: route.auth
+            middleware: route.middleware
+        })
+    return result

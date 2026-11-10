@@ -257,6 +257,20 @@ registrations. An unresolved module, missing/non-function export, or route using
 unregistered middleware fails startup. No function or captured closure is
 transferred from the main thread, and no per-request import is needed.
 
+Middleware registrations may also specify `validate: "checkRoutes"` (or the XML
+attribute `validate="checkRoutes"`). This names another export in the same
+module, called once in each worker before listening with an independent route
+metadata snapshot. It may return a Promise. A missing/non-function validator or
+a thrown/rejected error fails startup. Validators run without request contexts;
+they check configuration rather than handling requests.
+
+Inside request handlers and middleware, `context server` also provides
+`routes()`. It returns a fresh array of `{ path, kind, auth, middleware }` records,
+where kind is `endpoint` or `longpoll`. Module paths and handler names are not
+exposed. Mutating a snapshot cannot change routing. Startup validators receive
+the same metadata shape, allowing libraries to discover their configured URLs
+without introducing library-specific behavior into the server.
+
 The middleware signature is `wrap(handler, path, input)`: `handler` is the resolved
 application function, `path` is the actual request path including mounted prefixes,
 and `input` is the decoded request object. For example, the registered module can

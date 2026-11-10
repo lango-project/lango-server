@@ -21,7 +21,7 @@ export class Runtime(definition)
         close()
 
 Runtime(definition)
-    @serverContext = new ServerContext()
+    @serverContext = new ServerContext(definition.routes)
     @definition = definition
     @routes = []
     @events = {}
@@ -57,7 +57,17 @@ Runtime:prepareMiddleware(pending, name, spec)
         return target(spec)
       then(handler)
         capture name
+        capture spec
         @middlewares[name] = handler
+        if spec.validate != null
+            return target({
+                module: spec.module
+                handler: spec.validate
+            })
+        return null
+      then(validator)
+        if validator != null
+            return validator(@serverContext.routes())
         return null
 
 Runtime:prepareRoute(pending, route)

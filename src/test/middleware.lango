@@ -45,10 +45,13 @@ configured(extra = null)
     result = builder(extra)
     module = fixture()
     for ["wrap", "direct", "failAfter", "invalidOutput", "transaction", "block"] as name
-        result.addMiddleware(name, {
+        spec = {
             module: module
             handler: name
-        })
+        }
+        if name == "wrap"
+            spec.validate = "checkRoutes"
+        result.addMiddleware(name, spec)
     group = result.group({
         path: "/wrapped"
         module: module
@@ -369,6 +372,33 @@ startupFailure(pending, mode)
             throw "Unexpected middleware startup success"
           catch(error)
             assert error != "Unexpected middleware startup success"
+            return null
+          finally
+            capture server
+            return server.close()
+
+test "missing, non-callable and rejecting middleware validators fail before listening"
+    pending = Promise/resolve(null)
+    for ["missing", "notCallable", "rejectRoutes"] as validator
+        pending = validatorFailure(pending, validator)
+    return pending
+
+validatorFailure(pending, validator)
+    return chain pending
+      then(ignored)
+        capture validator
+        config = builder()
+        config.addMiddleware("checked", {
+            module: fixture()
+            handler: "direct"
+            validate: validator
+        })
+        server = config.build()
+        return chain server.start()
+          then(address)
+            throw "Unexpected validator startup success"
+          catch(error)
+            assert error != "Unexpected validator startup success"
             return null
           finally
             capture server

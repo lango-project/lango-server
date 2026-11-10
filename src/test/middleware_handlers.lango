@@ -18,9 +18,26 @@ export fail(input)
 export register(input)
 export validate(input)
 export audit(input)
+export checkRoutes(routes)
+export rejectRoutes(routes)
 export global notCallable
 
 global notCallable = 42
+
+checkRoutes(routes)
+    assert is_array(routes)
+    found = false
+    for routes as route
+        assert !("module" in route)
+        assert !("handler" in route)
+        if route.path == "/wrapped/business"
+            found = true
+            route.path = "/must-not-change"
+    assert found
+    return Promise/resolve(null)
+
+rejectRoutes(routes)
+    return Promise/reject("Invalid middleware configuration")
 
 wrap(handler, path, input)
     context request

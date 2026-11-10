@@ -18,6 +18,8 @@ import "../tokens"
     class Tokens
 import "../builder"
     class Builder
+import "../server_context"
+    class ServerContext
 
 settings()
     return options(process.cwd(), {
@@ -380,7 +382,7 @@ test "middleware declarations are order independent and custom routes retain gro
             <group path="/app" module="./handler.mjs" auth="anonymous">
                 <ui path="/run" handler="run"/>
             </group>
-            <middleware name="ui" module="./handler.mjs" handler="wrap"/>
+            <middleware name="ui" module="./handler.mjs" handler="wrap" validate="checkRoutes"/>
         </routes>
         file = path/join(dir, "routes.xml")
         fs/writeFileSync(file, "${xml}")
@@ -392,6 +394,7 @@ test "middleware declarations are order independent and custom routes retain gro
         assert definitions[0].middleware == "ui"
         registered = routes.middlewares()
         assert registered.ui.handler == "wrap"
+        assert registered.ui.validate == "checkRoutes"
         registered.ui.handler = "changed"
         current = routes.middlewares()
         assert current.ui.handler == "wrap"
@@ -531,3 +534,23 @@ test "included custom routes share root middleware without permitting package re
             recursive: true
             force: true
         })
+
+test "server route metadata is an independent snapshot without module or handler details"
+    definitions = []
+    definitions.add({
+        path: "/ui"
+        auth: "anonymous"
+        middleware: "ui"
+        module: "/private/handlers.mjs"
+        handler: "secret"
+    })
+    server = new ServerContext(definitions)
+    first = server.routes()
+    assert first[0].path == "/ui"
+    assert first[0].kind == "endpoint"
+    assert !Object/hasOwn(first[0], "module")
+    assert !Object/hasOwn(first[0], "handler")
+    route = first[0]
+    route.path = "/changed"
+    second = server.routes()
+    assert second[0].path == "/ui"

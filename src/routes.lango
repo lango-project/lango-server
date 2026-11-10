@@ -53,13 +53,16 @@ Routes:addMiddleware(name, spec)
     if !is_object(spec) or is_array(spec)
         throw "Middleware requires a module and exported handler"
     for spec as key: value
-        if key != "module" and key != "handler"
+        if key != "module" and key != "handler" and key != "validate"
             throw "Unknown middleware option: ${key}"
     if !is_string(spec.handler) or spec.handler == ""
         throw "Middleware handler is required"
+    if spec.validate != null and (!is_string(spec.validate) or spec.validate == "")
+        throw "Middleware validate must name an exported function"
     @middlewares[name] = {
         module: resolveModule(spec.module, @root)
         handler: spec.handler
+        validate: spec.validate
     }
     return @this
 
@@ -188,13 +191,14 @@ Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack,
               leaf(tag)
               includeAt(spec, directory, prefix, stack, auth)
           case "middleware"
-              attributes(tag, ["name", "module", "handler"])
+              attributes(tag, ["name", "module", "handler", "validate"])
               leaf(tag)
               if !allowEvents
                   throw "Middleware declarations are only allowed in the application's root routes.xml"
               addMiddleware(spec.name, {
                   module: resolveModule(spec.module, directory)
                   handler: spec.handler
+                  validate: spec.validate
               })
           case "event"
               attributes(tag, ["name", "module", "handler"])

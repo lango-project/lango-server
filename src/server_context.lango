@@ -2,14 +2,22 @@ import js "node:worker_threads" as threads
 import js global Promise
 import js global setTimeout
 import js global clearTimeout
+import "./route_info"
+    routeInfo(definitions)
 
-export class ServerContext()
+export class ServerContext(definitions = null)
     methods
         publish(path, key, data)
         cursor(path, key)
+        routes()
 
-ServerContext()
-    return null
+ServerContext(definitions = null)
+    if definitions == null
+        definitions = []
+    @routes = routeInfo(definitions)
+
+ServerContext:routes()
+    return from_json(to_json(@routes))
 
 ServerContext:publish(path, key, data)
     return invoke("publish", path, key, data)

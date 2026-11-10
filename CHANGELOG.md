@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional middleware startup validators and independent route metadata
+  snapshots through the worker's server context.
 - Add optional static GET/HEAD serving with deployment and Builder configuration,
   unchanged HTML, conditional requests and byte ranges outside the worker pool.
 - Initialize file-backed SQLite before opening workers to avoid concurrent WAL
