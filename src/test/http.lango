@@ -617,7 +617,7 @@ test "chunked bodies honor byte limits and stalled uploads honor body deadlines"
         bodyTimeoutMs: 50
     }, run)
 
-test "explicit renewal extends only successful requests and rejects expiration during the handler"
+test "validation and explicit renewal extend successful requests without reviving expired tokens"
     config = options(process.cwd(), {
         key: "01234567890123456789012345678901"
     })
@@ -633,8 +633,9 @@ test "explicit renewal extends only successful requests and rejects expiration d
             capture service
             capture address
             assert result.status == 200
-            unchanged = service.read("Bearer ${result.token}")
-            assert unchanged.exp == original.exp
+            validated = service.read("Bearer ${result.token}")
+            assert validated.exp > original.exp
+            assert validated.validatedAt > original.validatedAt
             return call(address, "/renew", {}, signed)
           then(result)
             capture signed

@@ -26,9 +26,12 @@ export class Runtime(definition)
         preload()
         handle(task)
         close()
+        refreshTokens(tokens)
 
 Runtime(definition)
-    @serverContext = new ServerContext(definition.routes)
+    refresh = (tokens)
+        return refreshTokens(tokens)
+    @serverContext = new ServerContext(definition.routes, refresh)
     @definition = definition
     @routes = []
     @events = {}
@@ -206,6 +209,7 @@ Runtime:handle(task)
         capture fresh
         if !fresh and is_number(validatedAt)
             stampValidation(claims, validatedAt)
+            token.renew()
         if route.auth != "anonymous" and !token.hasAuth(route.auth)
             throw {
                 status: 401
@@ -251,7 +255,7 @@ Runtime:handle(task)
         result = response.result(body)
         updated = tokenClaims(token, claims, result.status < 400)
         result.headers["x-lango-token"] = @tokens.sign(updated)
-        if @definition.settings.requestEvent and "request" in @events
+        if task.internal != true and @definition.settings.requestEvent and "request" in @events
             return audit(request.id, result, task.body, body, updated)
         return result
       catch(error)
@@ -277,6 +281,62 @@ Runtime:tokenClaims(token, claims, allowRenewal)
     if allowRenewal and token.renewalRequested()
         updated = @tokens.renew(updated)
     return updated
+
+Runtime:refreshTokens(tokens)
+    context request
+    context token
+    if !is_array(tokens) or tokens.length == 0 or tokens.length > 64
+        throw "Token refresh requires 1 to 64 tokens"
+    seen = []
+    for tokens as encoded
+        if !is_string(encoded) or encoded == "" or encoded.length > 16384 or seen.includes(encoded)
+            throw "Invalid refresh token"
+        seen.add(encoded)
+    owner = token.clientId?
+    results = []
+    pending = Promise/resolve(null)
+    for tokens as encoded
+        child = Object/assign({}, request, {
+            headers: Object/assign({}, request.headers, {
+                authorization: "Bearer ${encoded}"
+            })
+        })
+        pending = refreshOne(pending, results, encoded, owner, child)
+    return chain pending
+      then(ignored)
+        capture results
+        return results
+
+Runtime:refreshOne(pending, results, encoded, owner, child)
+    return chain pending
+      then(ignored)
+        capture encoded
+        capture owner
+        capture child
+        checked = null
+        try
+            checked = @tokens.read("Bearer ${encoded}")
+        catch error
+            return failure(401, "Unauthorized")
+        if checked.clientId != owner
+            return failure(401, "Unauthorized")
+        return handle({
+            request: child
+            body: "{}"
+            internal: true
+        })
+      then(result)
+        capture results
+        capture encoded
+        updated = null
+        if result.status < 400
+            updated = result.headers["x-lango-token"]
+        results.add({
+            previous: encoded
+            token: updated
+            status: result.status
+        })
+        return null
 
 Runtime:event(name, input)
     if !(name in @events)
@@ -320,8 +380,10 @@ Runtime:validate()
     context request
     context log
     claims = token.snapshot()
-    if !("validate" in @events) or Date/now() - claims.validatedAt < 1000
+    if Date/now() - claims.validatedAt < 1000
         return null
+    if !("validate" in @events)
+        return Date/now()
     original = JSON/stringify(claims)
     context token = new Token(claims, true)
     return chain Promise/resolve(null)

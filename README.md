@@ -415,7 +415,7 @@ The application authenticates credentials and grants permissions. These methods
 do not authenticate anyone automatically.
 
 Token updates are committed only after the handler and JSON serialization
-succeed. Validation updates preserve the original token expiry. `clearAuth()`
+succeed. Successful validation also requests expiry renewal. `clearAuth()`
 updates the returned token; it does not invalidate previously issued copies.
 Use application-owned storage and Validate to enforce logout/revocation across
 old tokens. There is no built-in session database or UI replay protocol.
@@ -445,9 +445,10 @@ Promise results are supported, and events run under the request's contexts.
   token. Only `true` continues; `false` produces 401. Exceptions, invalid return
   types, mutation, or timeouts fail the request without running the handler;
   operational failures are not reported as invalid credentials. Successful
-  validation updates the server-owned timestamp in the next successful reply.
-  Recent-token use does not advance it. If no event is configured, standard JWT
-  verification is sufficient. Revocation checks have a one-second freshness
+  validation updates the server-owned timestamp and renews expiry in the next
+  successful reply. Recent-token use does not advance the timestamp or implicitly
+  renew expiry. If no event is configured, standard JWT verification supplies
+  the successful validation result at the same freshness boundary. Revocation checks have a one-second freshness
   allowance and depend on the application's storage consistency.
 * **request(metadata)** is enabled only by `requestEvent: true`. It runs after
   the handler completes and JSON serialization succeeds, before the reply is
@@ -791,3 +792,28 @@ LANGO_TEST_REDIS=redis://127.0.0.1:6379 npm run test:longpoll
 The suite briefly pauses Redis commands to test infrastructure timeouts. Do not
 point it at a shared or production Redis instance. CI runs this suite separately
 from `npm test`, alongside the PostgreSQL integration suite.
+
+## Framework token refresh batches
+
+`context server.refreshTokens(tokens)` supports middleware that refreshes several
+form tokens in one HTTP request. It accepts 1–64 distinct nonempty token strings
+(up to 16,384 characters each). Structural validation completes before any item
+runs. The current authenticated token supplies the batch client identity.
+
+Each item must pass normal JWT verification and belong to that same `clientId`.
+The server dispatches the **current route** again with an empty input map and
+that item's Bearer token, using separate token, response and database scopes.
+This is used by Lango UI Ping; its ordinary empty-body path invokes the hook and
+requests renewal. Do not use this helper from a handler that recursively batches
+empty requests.
+
+The result is an array of `{ previous, token, status }`. Invalid, expired or
+foreign-client tokens produce an individual 401 and no replacement token.
+Handler/SQL failures retain their normal status and do not publish that item's
+claim changes. Items execute sequentially under the physical request's overall
+deadline and normal event deadlines. An interrupted physical request publishes
+no completed batch response; already completed item transactions are not undone.
+There is no automatic retry.
+
+Request auditing runs once for the physical batch response, not once per internal
+item; an internal result cannot replace the prepared outer HTTP reply.

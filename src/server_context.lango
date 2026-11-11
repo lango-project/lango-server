@@ -5,16 +5,24 @@ import js global clearTimeout
 import "./route_info"
     routeInfo(definitions)
 
-export class ServerContext(definitions = null)
+export class ServerContext(definitions = null, refresh = null)
     methods
         publish(path, key, data)
         cursor(path, key)
         routes()
+        refreshTokens(tokens)
 
-ServerContext(definitions = null)
+ServerContext(definitions = null, refresh = null)
     if definitions == null
         definitions = []
     @routes = routeInfo(definitions)
+    @refresh = refresh
+
+ServerContext:refreshTokens(tokens)
+    if @refresh == null
+        throw "Token refresh is unavailable"
+    refresh = @refresh
+    return refresh(tokens)
 
 ServerContext:routes()
     return from_json(to_json(@routes))
