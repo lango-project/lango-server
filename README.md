@@ -137,10 +137,13 @@ JWT authorization applies to POST handlers; static files are public.
   launcher module. Absolute or relative file modules are also accepted for
   application-local code; relative modules in XML resolve from the containing
   package, and Builder modules resolve from its application root.
-* Groups concatenate path prefixes. Paths are case-sensitive. Exact paths win;
-  otherwise the longest matching trailing `/*` prefix wins. `/orders/*` matches
-  `/orders/save`, not `/orders`. Duplicate paths and unsupported wildcard forms
-  are startup errors. The handler sees the actual path in `context request`.
+* Groups concatenate path prefixes. Paths are case-sensitive. Literal endpoints
+  beat parameterized endpoints, which beat trailing `/*` wildcards. Among matching
+  patterns in the same category, the first differing literal segment beats a
+  parameter; otherwise longer wildcard prefixes win. `/orders/*` matches
+  `/orders/save`, not `/orders`. Duplicate paths, equivalent parameter patterns
+  and unsupported wildcard forms are startup errors. The handler and middleware
+  see the original actual path in `context request`.
 * Includes resolve the package's exported `./routes.xml`. Publish the XML file
   and add it to the package's `exports` and `files`. Nested includes resolve
   dependencies from the including package. Include prefixes concatenate; a
@@ -169,6 +172,51 @@ A feature package can expose its definitions as follows:
 
 Its XML still names the handler module explicitly, for example
 `<endpoint path="/list" module="@shop/catalog" handler="list"/>`.
+
+### Path parameters
+
+An endpoint can capture complete path segments with `{name}`:
+
+```lango
+builder.endpoint({
+    path: "/user/{userId}"
+    module: "@shop/users"
+    handler: "read"
+    auth: "login"
+})
+```
+
+```xml
+<endpoint path="/user/{userId}" module="@shop/users" handler="read"/>
+```
+
+A POST to `/user/007` with body `{ "name": "Ada", "userId": "body-value" }`
+passes `{ name: "Ada", userId: "007" }` to the handler. URL parameters overwrite
+same-named body fields and are available before Register, middleware and handler
+execution. The JSON body must still be an object. Validate retains its existing
+input contract; parameters are not added to request headers or route metadata.
+
+Values are strings, never inferred as numbers. Each parameter consumes exactly
+one nonempty raw segment and is percent-decoded exactly once after choosing the
+winning route. `%20` becomes a space, `+` remains a plus, `%2F` becomes a slash
+inside that value, and `%252F` becomes `%2F`. Invalid percent encoding in a captured
+value produces HTTP 400 InvalidPath before application code runs. request.path
+and the middleware path argument retain the original encoded path.
+
+Multiple parameters, group prefixes, XML groups and npm include prefixes are
+supported. A trailing wildcard can follow parameters (`/user/{userId}/*`);
+no wildcard value is added to input. Query strings and path parameters remain
+separate concepts; this feature does not change the existing POST query policy.
+
+Parameter names are case-sensitive ASCII identifiers beginning with a letter or
+underscore. A name must occupy an entire segment, occur only once in a route,
+and cannot be __proto__, constructor or prototype. Routes such as `/user/{id}`
+and `/user/{name}` have the same structure and cannot both be registered.
+Overlapping structures with different literal positions are resolved from left
+to right, independently of registration order. For example, `/choose/static/{id}`
+beats `/choose/{id}/fixed` when both match `/choose/static/fixed`.
+
+Longpoll channel and fallback paths remain exact and do not accept parameters.
 
 ## Builder
 
@@ -603,7 +651,7 @@ No sticky sessions are required.
 The Builder equivalent is `builder.longpoll(options)` or
 `group.longpoll(options)`. No module or handler is needed. Group and include
 prefixes apply to both `path` and `fallback`; auth is inherited and defaults to
-`login`. Paths must be exact absolute URL paths, without wildcards or query
+`login`. Paths must be exact absolute URL paths, without parameters, wildcards or query
 strings. Duplicate paths conflict with endpoints as well as other longpoll routes.
 The fallback is returned to the client; the server never calls it automatically.
 

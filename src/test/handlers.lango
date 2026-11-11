@@ -7,6 +7,7 @@ import js global Promise
 import js global Date
 import js global setTimeout
 
+export parameters(input)
 export echo(input)
 export login(input)
 export logout(input)
@@ -76,6 +77,8 @@ register(input)
     context request
     context token
     token.set("registered", true)
+    if input.userId != null
+        token.set("pathUserId", input.userId)
     if request.headers["x-register"] == "fail"
         throw "Registration failed"
     return null
@@ -162,3 +165,13 @@ circular(input)
 
 serialized(input)
     return new Payload(input.value)
+
+
+parameters(input)
+    context request
+    context token
+    return {
+        input: input
+        path: request.path
+        registeredUserId: token.get("pathUserId")
+    }

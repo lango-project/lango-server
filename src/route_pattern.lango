@@ -1,0 +1,86 @@
+import js global RegExp
+
+export routePattern(path)
+export matchPath(pattern, path)
+export moreSpecific(candidate, current)
+
+routePattern(path)
+    if !is_string(path) or !path.startsWith("/") or path.includes("?") or path.includes("#") or path.includes("\\") or path.includes("//")
+        throw "Endpoint requires an absolute URL path"
+    if path.includes("*") and (!path.endsWith("/*") or path.indexOf("*") != path.lastIndexOf("*"))
+        throw "Only trailing /* wildcards are supported"
+    segments = path.split("/")
+    segments = segments.slice(1)
+    wildcard = path.endsWith("/*")
+    if wildcard
+        segments.pop()
+    names = []
+    shape = []
+    identifier = new RegExp("^[A-Za-z_][A-Za-z0-9_]*$")
+    reserved = ["__proto__", "constructor", "prototype"]
+    for segments as segment
+        if segment.includes("{") or segment.includes("}")
+            if !segment.startsWith("{") or !segment.endsWith("}")
+                throw "Path parameters must occupy an entire segment"
+            name = segment.slice(1, -1)
+            if !identifier.test(name) or reserved.includes(name)
+                throw "Invalid path parameter name: ${name}"
+            if names.includes(name)
+                throw "Duplicate path parameter: ${name}"
+            names.add(name)
+            shape.add("{}")
+          else
+              shape.add(segment)
+    if wildcard
+        shape.add("*")
+    key = shape.join("/")
+    key = "/${key}"
+    return {
+        segments: segments
+        wildcard: wildcard
+        key: key
+    }
+
+matchPath(pattern, path)
+    parts = path.split("/")
+    if parts[0] != ""
+        return null
+    parts = parts.slice(1)
+    count = pattern.segments.length
+    if pattern.wildcard
+        if parts.length <= count
+            return null
+      else
+          if parts.length != count
+              return null
+    parameters = {}
+    for pattern.segments as index: segment
+        value = parts[index]
+        if segment.startsWith("{")
+            if value == ""
+                return null
+            name = segment.slice(1, -1)
+            parameters[name] = value
+          else
+              if segment != value
+                  return null
+    return parameters
+
+moreSpecific(candidate, current)
+    if current == null
+        return true
+    if candidate.wildcard != current.wildcard
+        return !candidate.wildcard
+    first = candidate.segments
+    second = current.segments
+    count = first.length
+    if second.length < count
+        count = second.length
+    for range(count) as index
+        segment = first[index]
+        alternative = second[index]
+        literal = !segment.startsWith("{")
+        other = !alternative.startsWith("{")
+        if literal != other
+            return literal
+    return first.length > second.length

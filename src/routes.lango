@@ -1,3 +1,5 @@
+import "./route_pattern"
+    routePattern(path)
 import "./options"
     contains(items, value)
 import js "node:fs" as fs
@@ -34,9 +36,7 @@ Routes(root)
 
 Routes:endpoint(spec)
     item = new Endpoint(spec)
-    for @items as other
-        if other.path == item.path
-            throw "Duplicate endpoint: ${item.path}"
+    checkPath(item.path)
     @items.add({
         path: item.path
         module: resolveModule(item.module, @root)
@@ -45,6 +45,16 @@ Routes:endpoint(spec)
         middleware: item.middleware
     })
     return @this
+
+Routes:checkPath(path)
+    pattern = routePattern(path)
+    for @items as other
+        if other.path == path
+            throw "Duplicate endpoint: ${path}"
+        existing = routePattern(other.path)
+        if existing.key == pattern.key
+            throw "Conflicting endpoint pattern: ${path}"
+    return null
 
 Routes:addMiddleware(name, spec)
     middlewareName(name)
@@ -71,9 +81,7 @@ Routes:middlewares()
 
 Routes:longpoll(spec)
     item = longpollOptions(spec)
-    for @items as other
-        if other.path == item.path
-            throw "Duplicate endpoint: ${item.path}"
+    checkPath(item.path)
     @items.add(item)
     return @this
 

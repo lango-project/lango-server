@@ -1,3 +1,8 @@
+import "./route_pattern"
+    routePattern(path)
+    matchPath(pattern, path)
+    moreSpecific(candidate, current)
+import js global decodeURIComponent
 import "./server_context"
     class ServerContext
 import "./database"
@@ -74,7 +79,9 @@ Runtime:prepareMiddleware(pending, name, spec)
 
 Runtime:prepareRoute(pending, route)
     if route.kind == "longpoll"
-        @routes.add(route)
+        prepared = Object/assign({}, route)
+        prepared.pattern = routePattern(route.path)
+        @routes.add(prepared)
         return pending
     return chain pending
       then(ignored)
@@ -90,6 +97,7 @@ Runtime:prepareRoute(pending, route)
             middleware = @middlewares[name]
         @routes.add({
             path: route.path
+            pattern: routePattern(route.path)
             auth: route.auth
             handler: handler
             middleware: middleware
@@ -124,16 +132,20 @@ exported(mod, name)
 
 Runtime:match(path)
     best = null
-    length = -1
+    parameters = null
+    pattern = null
     for @routes as route
-        if route.path == path
-            return route
-        if route.path.endsWith("/*")
-            prefix = route.path.slice(0, -1)
-            if path.startsWith(prefix) and prefix.length > length
-                best = route
-                length = prefix.length
-    return best
+        captured = matchPath(route.pattern, path)
+        if captured != null and moreSpecific(route.pattern, pattern)
+            best = route
+            parameters = captured
+            pattern = route.pattern
+    if best == null
+        return null
+    return {
+        route: best
+        parameters: parameters
+    }
 
 Runtime:handle(task)
     Object/freeze(task.request.headers)
@@ -150,9 +162,10 @@ Runtime:handle(task)
               claims = @tokens.read(request.headers.authorization)
     catch error
         return failure(401, "Unauthorized")
-    route = match(request.path)
-    if route == null
+    matched = match(request.path)
+    if matched == null
         return failure(404, "RouteNotFound")
+    route = matched.route
     input = null
     try
         input = JSON/parse(task.body)
@@ -160,6 +173,11 @@ Runtime:handle(task)
             return failure(400, "InputMustBeObject")
     catch error
         return failure(400, "InvalidJson")
+    try
+        for matched.parameters as name: value
+            input[name] = decodeURIComponent(value)
+    catch error
+        return failure(400, "InvalidPath")
     context token = new Token(claims)
     context db = @database.scope()
     return chain Promise/resolve(null)

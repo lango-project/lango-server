@@ -63,6 +63,11 @@ configured(extra = null)
             handler: name
             middleware: "wrap"
         })
+    group.endpoint({
+        path: "/{value}/parameter"
+        handler: "business"
+        middleware: "wrap"
+    })
     for ["direct", "failAfter", "invalidOutput", "transaction", "block"] as name
         result.endpoint({
             path: "/${name}"
@@ -403,3 +408,14 @@ validatorFailure(pending, validator)
           finally
             capture server
             return server.close()
+
+
+test "path parameters reach middleware before handler dispatch and preserve the actual path"
+    run = (address)
+        return chain call(address, "/wrapped/route-value/parameter", {
+            value: "body-value"
+        })
+          then(result)
+            assertPacket(result, "route-value", "/wrapped/route-value/parameter")
+            return null
+    return serve(configured(), run)

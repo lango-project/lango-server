@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Capture named endpoint segments such as /user/{userId} and merge decoded string
+  parameters into input before Register, middleware and handler execution.
+- Prefer literal routes over parameters over wildcards, with deterministic
+  left-to-right specificity. Reject malformed and equivalent parameter patterns.
+- Preserve group/XML/include paths and middleware's actual encoded path; return
+  400 for invalid captured percent encoding. Longpoll paths remain exact.
+
 - Add deferred token renewal on successful requests, preserving identity and
   the actual validation timestamp and rejecting expiry during the handler.
 - Add controlled response rejection with explicit HTTP error codes, preserved

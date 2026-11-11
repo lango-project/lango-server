@@ -1,3 +1,5 @@
+import "./route_pattern"
+    routePattern(path)
 import "./middleware"
     middlewareName(name)
 
@@ -10,10 +12,7 @@ export class Endpoint(spec)
         middleware
 
 Endpoint(spec)
-    if !is_string(spec.path) or !spec.path.startsWith("/") or spec.path.includes("?") or spec.path.includes("#") or spec.path.includes("\\") or spec.path.includes("//")
-        throw "Endpoint requires an absolute URL path"
-    if spec.path.includes("*") and (!spec.path.endsWith("/*") or spec.path.indexOf("*") != spec.path.lastIndexOf("*"))
-        throw "Only trailing /* wildcards are supported"
+    routePattern(spec.path)
     for ["module", "handler"] as key
         if !is_string(spec[key]) or spec[key] == ""
             throw "Endpoint requires ${key}"

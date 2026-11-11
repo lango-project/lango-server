@@ -53,6 +53,25 @@ withServer(extra, run)
         handler: "serialized"
         auth: "anonymous"
     })
+    for ["/user/{userId}", "/org/{orgId}/user/{userId}", "/only/{id}", "/choose/{first}/fixed", "/choose/static/{second}"] as route
+        builder.endpoint({
+            path: route
+            module: module
+            handler: "parameters"
+            auth: "anonymous"
+        })
+    builder.endpoint({
+        path: "/user/*"
+        module: module
+        handler: "echo"
+        auth: "anonymous"
+    })
+    builder.endpoint({
+        path: "/user/me"
+        module: module
+        handler: "serialized"
+        auth: "anonymous"
+    })
     for ["register", "validate", "request"] as name
         handler = name
         if name == "request"
@@ -666,3 +685,63 @@ test "explicit renewal extends only successful requests and rejects expiration d
     return withServer({
         requestTimeoutMs: 4000
     }, run)
+
+
+test "worker routing merges decoded path parameters before Register and keeps exact/wildcard precedence"
+    run = (address)
+        return chain call(address, "/user/007", {
+            userId: "spoofed"
+            value: "kept"
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body.input.userId == "007"
+            assert result.body.input.value == "kept"
+            assert result.body.registeredUserId == "007"
+            return call(address, "/org/acme/user/A%20B")
+          then(result)
+            capture address
+            assert result.body.input.orgId == "acme"
+            assert result.body.input.userId == "A B"
+            assert result.body.path == "/org/acme/user/A%20B"
+            return call(address, "/user/%252F")
+          then(result)
+            capture address
+            assert result.body.input.userId == "%2F"
+            return call(address, "/user/%2F")
+          then(result)
+            capture address
+            assert result.body.input.userId == "/"
+            return call(address, "/user/%C4%B0pek")
+          then(result)
+            capture address
+            assert result.body.input.userId == "İpek"
+            return call(address, "/user/me", {
+                value: "exact"
+            })
+          then(result)
+            capture address
+            assert result.body.wrapped == "exact"
+            return call(address, "/user/a/b", {
+                value: "wildcard"
+            })
+          then(result)
+            capture address
+            assert result.body.value == "wildcard"
+            return call(address, "/choose/static/fixed")
+          then(result)
+            capture address
+            assert result.body.input.second == "fixed"
+            assert !Object/hasOwn(result.body.input, "first")
+            return call(address, "/only/")
+          then(result)
+            capture address
+            assert result.status == 404
+            return call(address, "/user/%E0%A4%A")
+          then(result)
+            assert result.status == 400
+            assert result.body.error == "InvalidPath"
+            assert result.token == null
+            return null
+    return withServer({}, run)

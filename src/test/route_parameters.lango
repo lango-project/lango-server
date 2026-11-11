@@ -1,0 +1,112 @@
+import "../route_pattern"
+    routePattern(path)
+    matchPath(pattern, path)
+    moreSpecific(candidate, current)
+import "../routes"
+    class Routes
+import "../group"
+    class Group
+import "../longpoll_options"
+    longpollOptions(spec)
+import js "node:fs" as fs
+import js "node:path" as path
+import js "node:assert/strict" as check
+import js global process
+
+expectFailure(action)
+    failed = false
+    try
+        action()
+    catch error
+        failed = true
+    assert failed
+    return null
+
+test "path parameters match complete nonempty segments without consuming extra slashes"
+    pattern = routePattern("/org/{orgId}/user/{userId}")
+    check/deepStrictEqual(matchPath(pattern, "/org/acme/user/007"), {
+        orgId: "acme"
+        userId: "007"
+    })
+    assert matchPath(pattern, "/org/acme/user/") == null
+    assert matchPath(pattern, "/org/acme/user/007/extra") == null
+    assert matchPath(pattern, "/org//user/007") == null
+    check/deepStrictEqual(matchPath(routePattern("/user/{id}/*"), "/user/7/settings"), {
+        id: "7"
+    })
+    assert matchPath(routePattern("/user/{id}/*"), "/user/7") == null
+    assert matchPath(routePattern("/user/*"), "/user") == null
+    check/deepStrictEqual(matchPath(routePattern("/"), "/"), {})
+
+test "route specificity is independent of registration order"
+    assert moreSpecific(routePattern("/user/me"), routePattern("/user/{id}"))
+    assert moreSpecific(routePattern("/user/{id}"), routePattern("/user/*"))
+    assert moreSpecific(routePattern("/choose/static/{id}"), routePattern("/choose/{id}/fixed"))
+    assert moreSpecific(routePattern("/user/{id}/settings/*"), routePattern("/user/{id}/*"))
+
+test "invalid or repeated parameter names and embedded placeholders are rejected"
+    cases = ["/user/{}", "/user/{user-id}", "/user/{1id}", "/user/{id", "/user/id}", "/user/prefix-{id}", "/{id}/{id}", "/{__proto__}", "/{constructor}", "/{prototype}"]
+    for cases as value
+        action = ()
+            capture value
+            routePattern(value)
+        expectFailure(action)
+    action = ()
+        longpollOptions({
+            path: "/updates/{id}"
+        })
+    expectFailure(action)
+
+test "XML, groups and npm includes retain parameters and reject equivalent route shapes"
+    dir = fs/mkdtempSync(path/join(process.cwd(), ".test-output", "parameters-"))
+    try
+        fs/writeFileSync(path/join(dir, "package.json"), "{}")
+        fs/writeFileSync(path/join(dir, "handler.mjs"), "")
+        routes = new Routes(dir)
+        group = new Group(routes, {
+            path: "/org/{orgId}"
+            module: "./handler.mjs"
+            auth: "anonymous"
+        })
+        group.endpoint({
+            path: "/user/{userId}"
+            handler: "read"
+        })
+        xml = <routes><group path="/project/{projectId}" module="./handler.mjs" auth="anonymous"><endpoint path="/task/{taskId}" handler="read"/></group></routes>
+        file = path/join(dir, "routes.xml")
+        fs/writeFileSync(file, "${xml}")
+        routes.xml(file)
+        included = path/join(dir, "node_modules", "example-routes")
+        fs/mkdirSync(included, {
+            recursive: true
+        })
+        fs/writeFileSync(path/join(included, "package.json"), to_json({
+            name: "example-routes"
+            exports: {
+                "./routes.xml": "./routes.xml"
+            }
+        }))
+        fs/writeFileSync(path/join(included, "handler.mjs"), "")
+        xml = <routes><endpoint path="/user/{userId}" module="./handler.mjs" handler="read" auth="anonymous"/></routes>
+        fs/writeFileSync(path/join(included, "routes.xml"), "${xml}")
+        routes.include({
+            module: "example-routes"
+            path: "/api/{version}"
+        })
+        definitions = routes.definitions()
+        assert definitions[0].path == "/org/{orgId}/user/{userId}"
+        assert definitions[1].path == "/project/{projectId}/task/{taskId}"
+        assert definitions[2].path == "/api/{version}/user/{userId}"
+        duplicate = ()
+            capture routes
+            routes.endpoint({
+                path: "/org/{company}/user/{person}"
+                module: "./handler.mjs"
+                handler: "read"
+            })
+        expectFailure(duplicate)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })

@@ -42,7 +42,7 @@ longpollOptions(spec)
     return result
 
 validPath(value)
-    if !is_string(value) or !value.startsWith("/") or value.includes("*") or value.includes("?") or value.includes("#") or value.includes("\\") or value.includes("//")
+    if !is_string(value) or !value.startsWith("/") or value.includes("*") or value.includes("{") or value.includes("}") or value.includes("?") or value.includes("#") or value.includes("\\") or value.includes("//")
         throw "Longpoll requires an exact absolute URL path"
     return null
 
