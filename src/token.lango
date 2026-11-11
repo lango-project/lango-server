@@ -4,9 +4,9 @@ import js global Object
 
 export class Token(claims, readonly = false)
     properties
-        clientId
-        auth
-        expiresAt
+        clientId?
+        auth?
+        expiresAt?
     methods
         AddAuth(permission)
         clearAuth()
@@ -24,6 +24,16 @@ Token(claims, readonly = false)
     @clientId = claims.clientId
     @auth = claims.auth
     @expiresAt = claims.exp
+    Object/freeze(@this)
+
+Token:clientId?
+    return @clientId
+
+Token:auth?
+    return @auth
+
+Token:expiresAt?
+    return @expiresAt
 
 Token:AddAuth(permission)
     writable()

@@ -41,6 +41,6 @@
     "serve-static": "^2.2.1"
   },
   "devDependencies": {
-    "@lango-project/lango-js": "^0.1.13"
+    "@lango-project/lango-js": "^0.1.16"
   }
 }

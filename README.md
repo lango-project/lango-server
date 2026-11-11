@@ -58,7 +58,7 @@ greet(input)
     log.info("Greeting requested")
     return {
         message: "Hello, ${input.name}"
-        clientId: token.clientId
+        clientId: token.clientId?
     }
 ```
 
@@ -399,12 +399,15 @@ Unauthorized requests do not receive a newly created token.
 
 `context token` supports:
 
-* `clientId`, `auth`, `expiresAt`: identity, comma-separated permissions, expiry.
+* `clientId?`, `auth?`, `expiresAt?`: getter-only identity, comma-separated
+  permissions and expiry. Direct assignment is rejected, including JavaScript
+  attempts to shadow these properties. Use the controlled methods below to update
+  claims or permissions.
 * `AddAuth("login")`, `clearAuth()`, `hasAuth("admin")`: exact trimmed membership.
 * `get(name)`, `set(name, value)`: JSON custom claims; server-owned JWT fields are
   protected. `get` returns a copy for structured values.
 * `renew()`: requests renewal after successful serialization and SQL cleanup on
-  a reply with a status below 400. It does not immediately change `expiresAt`.
+  a reply with a status below 400. It does not immediately change `expiresAt?`.
 
 Default endpoint auth is `login`. `auth="anonymous"` permits anonymous callers;
 other values require that exact permission. `admin` does not imply `login`.

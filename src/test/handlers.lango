@@ -6,6 +6,7 @@ import js global process
 import js global Promise
 import js global Date
 import js global setTimeout
+import js global Object
 
 export parameters(input)
 export echo(input)
@@ -33,8 +34,8 @@ echo(input)
     return {
         value: input.value
         path: request.path
-        clientId: token.clientId
-        auth: token.auth
+        clientId: token.clientId?
+        auth: token.auth?
         threadId: threads.threadId
         registered: token.get("registered")
     }
@@ -93,7 +94,9 @@ validate(input)
       case "error"
           throw "Database unavailable"
       case "mutate"
-          token.auth = "admin"
+          Object/assign(token, {
+              auth: "admin"
+          })
           return true
       case "hang"
           return pause({

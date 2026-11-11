@@ -18,5 +18,5 @@ save(input)
     return {
         id: row.id
         message: row.message
-        clientId: token.clientId
+        clientId: token.clientId?
     }

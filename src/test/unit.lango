@@ -7,6 +7,8 @@ import js "node:os" as os
 import js global process
 import js global Date
 import js global Object
+import js global Reflect
+import js global Function
 import "../options"
     options(root, supplied = null)
     deployment(directory)
@@ -226,6 +228,53 @@ test "package includes use exported XML, compose prefixes and allow repeated mou
             recursive: true
             force: true
         })
+
+test "Token properties are getter-only while controlled mutation methods remain usable"
+    service = new Tokens(settings())
+    claims = service.create()
+    token = new Token(claims)
+    assert token.clientId? == claims.clientId
+    assert token.auth? == ""
+    assert token.expiresAt? == claims.exp
+    assert Object/isFrozen(token)
+    for ["clientId", "auth", "expiresAt"] as name
+        descriptor = Object/getOwnPropertyDescriptor(Token.prototype, name)
+        assert is_kindof(descriptor.get, Function)
+        assert descriptor.set == null
+        assert !Reflect/set(token, name, "changed")
+    shadow = ()
+        capture token
+        Object/defineProperty(token, "auth", {
+            value: "admin"
+        })
+    expectFailure(shadow)
+    token.AddAuth("login")
+    assert token.auth? == "login"
+    token.set("state", {
+        counter: 1
+    })
+    detached = token.get("state")
+    detached.counter = 2
+    stored = token.get("state")
+    assert stored.counter == 1
+    token.clearAuth()
+    assert token.auth? == ""
+    assert token.clientId? == claims.clientId
+    assert token.expiresAt? == claims.exp
+
+test "readonly event Tokens reject claim and permission changes"
+    service = new Tokens(settings())
+    locked = new Token(service.create(), true)
+    changeClaim = ()
+        capture locked
+        locked.set("state", "changed")
+    changeAuth = ()
+        capture locked
+        locked.AddAuth("admin")
+    expectFailure(changeClaim)
+    expectFailure(changeAuth)
+    assert locked.auth? == ""
+    assert locked.get("state") == null
 
 test "JWT verifies signature expiry issuer audience and exact auth memberships"
     service = new Tokens(settings())

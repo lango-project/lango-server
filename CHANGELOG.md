@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Expose server Token identity, permissions and expiry through getter-only
+  clientId?, auth? and expiresAt? properties. Freeze the public object against
+  shadowing while retaining guarded claim/auth/renewal methods.
+- Require the accessor-capable Lango compiler and verify direct property writes,
+  detached claim reads, readonly event guards and controlled mutation methods.
+
 - Capture named endpoint segments such as /user/{userId} and merge decoded string
   parameters into input before Register, middleware and handler execution.
 - Prefer literal routes over parameters over wildcards, with deterministic
