@@ -48,7 +48,7 @@ expectFailure(action)
 test "configuration has bounded defaults and rejects unknown or unsafe options"
     config = settings()
     assert config.workers == 2
-    assert config.bodyLimit == 1048576
+    assert config.bodyLimit == 2097152
     values = [-1, 0, 129, 2147483648, 1, "short"]
     for ["port", "workers", "workers", "requestTimeoutMs", "typo", "key"] as index: name
         spec = {

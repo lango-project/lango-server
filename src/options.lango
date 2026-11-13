@@ -28,7 +28,7 @@ options(root, supplied = null)
         port: 3000
         workers: 2
         maxQueue: 64
-        bodyLimit: 1048576
+        bodyLimit: 2097152
         bodyTimeoutMs: 30000
         requestTimeoutMs: 30000
         eventTimeoutMs: 5000

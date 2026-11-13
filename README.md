@@ -352,7 +352,7 @@ request/event deadlines and SQL transaction cleanup still apply.
 
 ```xml
 <deploy>
-    <http host="127.0.0.1" port="3000" bodyLimit="1048576" bodyTimeoutMs="30000"/>
+    <http host="127.0.0.1" port="3000" bodyLimit="2097152" bodyTimeoutMs="30000"/>
     <workers workers="2" maxQueue="64" requestTimeoutMs="30000"
              startupTimeoutMs="30000" shutdownTimeoutMs="30000"/>
     <events requestEvent="false" eventTimeoutMs="5000"/>
@@ -363,8 +363,10 @@ request/event deadlines and SQL transaction cleanup still apply.
 These are also the default values, apart from the required signing key and the
 example issuer/audience (defaults: `lango-server` / `lango-client`). Builder uses
 these attribute names directly in `configure`. Unknown options are errors.
-`bodyLimit` is bytes; timeouts are milliseconds. Workers range from 1 to 128;
-`maxQueue: 0` disables waiting. JWT lifetime is 1 to 86400 seconds.
+`bodyLimit` is bytes and defaults to 2 MiB (2097152 bytes), allowing a 1 MiB
+binary file encoded as base64 within a JSON form. Larger combined form payloads
+require an explicit higher limit. Timeouts are milliseconds. Workers range from
+1 to 128; `maxQueue: 0` disables waiting. JWT lifetime is 1 to 86400 seconds.
 
 For rotation, use `keysFile` instead of `keyEnv`, and select `activeKeyId`:
 
