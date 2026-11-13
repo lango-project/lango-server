@@ -107,8 +107,29 @@ exist when the server starts. Only one static root is supported.
 GET and HEAD stream files in the main thread without reserving a worker or
 creating a token. HTML is served unchanged. File responses support conditional
 requests and byte ranges through `serve-static`. Query strings are allowed for
-static assets. Missing files and directories without an index return 404;
-directory listings and SPA fallbacks are not enabled. Dotfiles are denied.
+static assets. By default, missing files and directories without an index return
+404; directory listings are disabled and dotfiles are denied.
+
+For a Lango browser application, explicitly enable its compiler runtime and
+HTML page fallback:
+
+```xml
+<static directory=".lango/public" fallback="index.html" runtime="true"/>
+```
+
+The equivalent Builder settings are `fallback: "index.html"` and `runtime: true`
+inside `static`. Both are off by default. The fallback file must exist at startup.
+Only missing extensionless GET/HEAD paths that explicitly accept HTML receive
+this unchanged shell. Asset paths such as `/missing.js`, JSON requests and HTML
+with `q=0` keep their error responses. An existing file still uses ordinary
+range/conditional handling. Dotted page paths do not use this fallback.
+
+`runtime` permits the public `.lango` compiler-runtime subtree at the static
+root, which generated browser modules import. Other dotfiles, nested hidden
+segments, traversal, invalid escapes, backslashes and NUL paths are rejected.
+Put only public runtime assets there; signing keys remain outside the static
+root. The application generator uses `.lango/public` for assets and the separate
+`.lango/keys.json` for its local signing key.
 
 POST requests retain the normal JSON worker pipeline, including at `/`. Static
 serving alone does not reserve that POST path or install UI lifecycle handlers.

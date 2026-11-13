@@ -99,7 +99,7 @@ deployment(directory)
         seen.add(name)
         switch name
           case "static"
-              attributes(tag, ["path", "directory", "index"])
+              attributes(tag, ["path", "directory", "index", "fallback", "runtime"])
               settings.static = tag.attributes()
               continue
           case "http"

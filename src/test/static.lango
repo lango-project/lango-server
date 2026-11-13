@@ -4,6 +4,7 @@ import js "node:path" as path
 import js global process
 import js global fetch
 import js global Promise
+import js global Object
 
 fixture()
     dir = fs/mkdtempSync(path/resolve(".test-output/static-"))
@@ -16,7 +17,7 @@ fixture()
     fs/writeFileSync(path/join(dir, "outside.txt"), "outside")
     return dir
 
-configured(dir, mount)
+configured(dir, mount, fallback = null, runtime = false)
     builder = new api/Builder(process.cwd())
     builder.configure({
         key: "01234567890123456789012345678901"
@@ -25,6 +26,8 @@ configured(dir, mount)
         static: {
             path: mount
             directory: path/join(dir, "public")
+            fallback: fallback
+            runtime: runtime
         }
     })
     builder.endpoint({
@@ -164,6 +167,100 @@ test "a missing static directory fails startup before accepting connections"
       catch(error)
         assert error != "Unexpected startup success"
         return null
+      finally
+        capture server
+        return server.close()
+      finally
+        capture fs
+        capture dir
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "opt-in HTML fallback preserves asset errors and the explicit compiler runtime boundary"
+    dir = fixture()
+    assets = path/join(dir, "public")
+    fs/mkdirSync(path/join(assets, ".lango"))
+    fs/writeFileSync(path/join(assets, ".lango", "runtime.mjs"), "export const ready = true;")
+    fs/writeFileSync(path/join(assets, ".lango", ".private"), "secret")
+    server = configured(dir, "/", "index.html", true)
+    state = {}
+    return chain server.start()
+      then(address)
+        capture state
+        Object/assign(state, {
+            address: address
+        })
+        return request(address, "/profile/details?tab=one", {
+            headers: {
+                Accept: "text/html"
+            }
+        })
+      then(result)
+        capture state
+        assert result.status == 200
+        assert result.body.includes("Plain page")
+        assert result.headers.get("content-type").includes("text/html")
+        assert result.headers.get("x-lango-token") == null
+        return request(state.address, "/profile/details", {
+            method: "HEAD"
+            headers: {
+                Accept: "text/html"
+            }
+        })
+      then(result)
+        capture state
+        assert result.status == 200
+        assert result.body == ""
+        return request(state.address, "/missing.js", {
+            headers: {
+                Accept: "text/html"
+            }
+        })
+      then(result)
+        capture state
+        assert result.status == 404
+        return request(state.address, "/profile/details", {
+            headers: {
+                Accept: "text/html;q=0,application/json"
+            }
+        })
+      then(result)
+        capture state
+        assert result.status == 404
+        return request(state.address, "/profile/details", {
+            headers: {
+                Accept: "application/json"
+            }
+        })
+      then(result)
+        capture state
+        assert result.status == 404
+        return request(state.address, "/.lango/runtime.mjs")
+      then(result)
+        capture state
+        assert result.status == 200
+        assert result.body.includes("ready")
+        return request(state.address, "/.lango/%00")
+      then(result)
+        capture state
+        assert result.status == 400
+        return request(state.address, "/.lango/.private", {
+            headers: {
+                Accept: "text/html"
+            }
+        })
+      then(result)
+        capture state
+        assert result.status == 403
+        return request(state.address, "/.lango/%2e%2e%2f.secret", {
+            headers: {
+                Accept: "text/html"
+            }
+        })
+      then(result)
+        assert result.status != 200
       finally
         capture server
         return server.close()

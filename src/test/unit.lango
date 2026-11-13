@@ -66,7 +66,7 @@ test "deployment XML resolves environment keys and rejects typos"
         process.env.LANGO_SERVER_TEST_KEY = "01234567890123456789012345678901"
         xml = <deploy>
             <http port="0"/>
-            <static path="/assets" directory="./public" index="home.html"/>
+            <static path="/assets" directory="./public" index="home.html" fallback="home.html" runtime="true"/>
             <workers workers="1" maxQueue="0"/>
             <events requestEvent="true" eventTimeoutMs="250"/>
             <jwt keyEnv="LANGO_SERVER_TEST_KEY"/>
@@ -80,6 +80,8 @@ test "deployment XML resolves environment keys and rejects typos"
         assert config.static.path == "/assets"
         assert config.static.directory == path/join(dir, "public")
         assert config.static.index == "home.html"
+        assert config.static.fallback == "home.html"
+        assert config.static.runtime == true
         xml = <deploy><workers typo="1"/></deploy>
         fs/writeFileSync(file, "${xml}")
         action = ()
@@ -102,6 +104,8 @@ test "static configuration defaults are optional and unsafe or unknown settings 
     })
     assert config.static.path == "/"
     assert config.static.index == "index.html"
+    assert config.static.fallback == null
+    assert config.static.runtime == false
     assert config.static.directory == path/resolve("public")
     cases = []
     cases.add([])

@@ -2,6 +2,8 @@ import js "node:fs" as fs
 import js "node:path" as path
 import js "serve-static" as files
 import js global RegExp
+import js global decodeURIComponent
+import js global String
 
 export staticOptions(root, spec)
 export class StaticFiles(settings)
@@ -13,7 +15,7 @@ staticOptions(root, spec)
         return null
     if !is_object(spec) or is_array(spec)
         throw "static must be a map"
-    allowed = ["path", "directory", "index"]
+    allowed = ["path", "directory", "index", "fallback", "runtime"]
     for spec as key: value
         if !allowed.includes(key)
             throw "Unknown static option: ${key}"
@@ -32,19 +34,39 @@ staticOptions(root, spec)
         index = "index.html"
     if !is_string(index) or index == "" or index.startsWith(".") or index.includes("/") or index.includes("\\")
         throw "Static index must be a file name"
+    fallback = spec.fallback
+    if fallback != null and (!is_string(fallback) or fallback == "" or fallback.startsWith(".") or fallback.includes("/") or fallback.includes("\\"))
+        throw "Static fallback must be a file name"
+    runtime = spec.runtime
+    if runtime == null or runtime == "false"
+        runtime = false
+    if runtime == "true"
+        runtime = true
+    if !is_bool(runtime)
+        throw "Static runtime must be boolean"
     return {
         path: mount
         directory: path/resolve(root, spec.directory)
         index: index
+        fallback: fallback
+        runtime: runtime
     }
 
 StaticFiles(settings)
     @settings = settings
     if !fs/statSync(settings.directory).isDirectory()
         throw "Static directory must be a directory"
+    if settings.fallback != null and !fs/statSync(path/join(settings.directory, settings.fallback)).isFile()
+        throw "Static fallback must be a file"
     @serve = files/default(settings.directory, {
         index: settings.index
         dotfiles: "deny"
+        fallthrough: false
+        redirect: false
+    })
+    @runtime = files/default(settings.directory, {
+        index: false
+        dotfiles: "allow"
         fallthrough: false
         redirect: false
     })
@@ -60,31 +82,85 @@ StaticFiles:receive(req, res, failed)
         req.url = url.slice(mount.length)
         if req.url == "" or req.url.startsWith("?")
             req.url = "/${req.url}"
+    local = req.url.split("?")[0]
+    decoded = null
+    try
+        decoded = decodeURIComponent(local)
+    catch error
+        failed(400, "InvalidPath")
+        return null
+    if decoded.includes("\\") or decoded.includes(String/fromCharCode(0))
+        failed(400, "InvalidPath")
+        return null
+    segments = decoded.split("/")
+    runtime = false
+    for segments as index: segment
+        if segment.startsWith(".")
+            if index == 1 and segment == ".lango" and @settings.runtime
+                runtime = true
+              else
+                  failed(403, "Forbidden")
+                  return null
     done = (error)
+        capture req
         capture res
         capture failed
-        if res.headersSent
-            res.destroy()
-            return null
-        status = 404
-        code = "NotFound"
-        if error != null
-            switch error.status
-              case 400
-                  status = 400
-                  code = "InvalidPath"
-              case 403
-                  status = 403
-                  code = "Forbidden"
-              case 416
-                  status = 416
-                  code = "RangeNotSatisfiable"
-              case 404
-                  status = 404
-              else
-                  status = 500
-                  code = "InternalServerError"
-        failed(status, code)
+        capture decoded
+        failure(req, res, failed, error, decoded)
     serve = @serve
+    if runtime
+        serve = @runtime
     serve(req, res, done)
     return null
+
+StaticFiles:failure(req, res, failed, error, pathname = null)
+    if res.headersSent
+        res.destroy()
+        return null
+    status = 404
+    code = "NotFound"
+    if error != null
+        switch error.status
+          case 400
+              status = 400
+              code = "InvalidPath"
+          case 403
+              status = 403
+              code = "Forbidden"
+          case 416
+              status = 416
+              code = "RangeNotSatisfiable"
+          case 404
+              status = 404
+          else
+              status = 500
+              code = "InternalServerError"
+    if status == 404 and pathname != null and @settings.fallback != null and !pathname.startsWith("/.lango") and path/posix/extname(pathname) == "" and acceptsHTML(req.headers.accept)
+        req.url = "/${@settings.fallback}"
+        done = (error)
+            capture req
+            capture res
+            capture failed
+            failure(req, res, failed, error)
+        serve = @serve
+        serve(req, res, done)
+        return null
+    failed(status, code)
+    return null
+
+acceptsHTML(value)
+    if !is_string(value)
+        return false
+    zero = new RegExp("^q\\s*=\\s*0(?:\\.0*)?$", "i")
+    for value.split(",") as range
+        parts = range.split(";")
+        media = parts[0]
+        type = media.trim().toLowerCase()
+        if type == "text/html" or type == "application/xhtml+xml"
+            allowed = true
+            for parts.slice(1) as parameter
+                if zero.test(parameter.trim())
+                    allowed = false
+            if allowed
+                return true
+    return false
