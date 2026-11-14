@@ -194,7 +194,7 @@ Server:messageReceived(message)
     record = @tasks[message.id]
     if message.kind == "prepared"
         record.result = message.result
-        record.clientId = message.clientId
+        record.logIdentity = message.logIdentity
         resetDeadline(record, @definition.settings.eventTimeoutMs)
     if message.kind == "event"
         resetDeadline(record, @definition.settings.eventTimeoutMs)
@@ -446,7 +446,7 @@ Server:settle(record, pending)
         capture record
         if record.result != null
             context log
-            log.err("[${record.id}] [clientId=${record.clientId}] Request event interrupted; preserving prepared result")
+            log.err("${record.logIdentity} Request event interrupted; preserving prepared result")
         finish(record, record.result, error)
         return null
       finally

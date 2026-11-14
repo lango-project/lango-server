@@ -130,6 +130,9 @@ empty(input)
     return null
 
 diagnostic(input)
+    context token
+    token.set("sessionId", "diagnostic-session")
+    token.set("userId", "diagnostic-user")
     return JSON/parse("{")
 
 fail(input)

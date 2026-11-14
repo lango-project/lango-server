@@ -250,7 +250,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         capture state
         assert details.includes("Request failed:")
         assert details.includes("SyntaxError")
-        assert details.includes("[clientId=${state.clientId}] Request failed:")
+        assert details.includes("[clientId=${state.clientId}] [sessionId=diagnostic-session] [userId=diagnostic-user] Request failed:")
         if process.env.LANGO_TEST_REDIS == null
             return null
         return chain fetch("http://127.0.0.1:${state.server.port}/updates", {

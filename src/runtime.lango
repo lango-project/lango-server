@@ -20,6 +20,8 @@ import "./response"
     class Response
 import "./http_failure"
     class HttpFailure
+import "./request_identity"
+    requestIdentity(id, token)
 import "./error_details"
     errorDetails(error)
 
@@ -272,7 +274,7 @@ Runtime:handle(task)
             return error.result()
         if error == "TokenExpired" or (is_object(error) and error.status == 401)
             return failure(401, "Unauthorized")
-        log.err("[${request.id}] [clientId=${token.clientId?}] Request failed: ${errorDetails(error)}")
+        log.err("${requestIdentity(request.id, token)} Request failed: ${errorDetails(error)}")
         return failure(500, "InternalServerError")
       finally
         capture db
@@ -428,7 +430,7 @@ Runtime:audit(id, result, input, output, claims)
     }
     threads/parentPort/postMessage({
         kind: "prepared"
-        clientId: token.clientId?
+        logIdentity: requestIdentity(id, token)
         id: id
         result: result
     })
@@ -452,7 +454,7 @@ Runtime:audit(id, result, input, output, claims)
         capture request
         capture token
         closeScope(db, false)
-        log.err("[${request.id}] [clientId=${token.clientId?}] Request event failed: ${errorDetails(error)}")
+        log.err("${requestIdentity(request.id, token)} Request event failed: ${errorDetails(error)}")
         return null
       then(ignored)
         capture result

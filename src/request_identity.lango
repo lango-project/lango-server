@@ -1,0 +1,9 @@
+export requestIdentity(id, token)
+
+requestIdentity(id, token)
+    identity = "[${id}] [clientId=${token.clientId?}]"
+    for ["sessionId", "userId"] as name
+        value = token.get(name)
+        if value != null
+            identity = "${identity} [${name}=${value}]"
+    return identity

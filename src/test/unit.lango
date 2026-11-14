@@ -1,3 +1,5 @@
+import "../request_identity"
+    requestIdentity(id, token)
 import "../error_details"
     errorDetails(error)
 import js global Error
@@ -660,3 +662,16 @@ test "error diagnostics preserve stack traces and thrown messages without serial
         code: "ENOENT"
         token: "private"
     }) == "ENOENT"
+
+
+test "request identity includes optional token IDs only when present"
+    service = new Tokens(settings())
+    token = new Token(service.create())
+    base = "[request] [clientId=${token.clientId?}]"
+    assert requestIdentity("request", token) == base
+    token.set("sessionId", "session-1")
+    assert requestIdentity("request", token) == "${base} [sessionId=session-1]"
+    token.set("userId", 0)
+    assert requestIdentity("request", token) == "${base} [sessionId=session-1] [userId=0]"
+    token.set("sessionId", null)
+    assert requestIdentity("request", token) == "${base} [userId=0]"
