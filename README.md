@@ -369,6 +369,14 @@ in the worker. Request events observe that final serialized result. Middleware,
 handler and serialization errors follow the existing error/token behavior;
 request/event deadlines and SQL transaction cleanup still apply.
 
+Unexpected failures are logged through `context log` with the request ID, the
+request token's `clientId`, and the original error message and stack trace when
+available. Workers enable Node source
+maps so compiled application errors point to their `.lango` source when matching
+`.mjs.map` files are deployed. Keep these files alongside the compiled modules.
+HTTP clients receive the generic `InternalServerError` response; internal error
+messages and stack traces remain in the server logs.
+
 ## Configuration
 
 ```xml

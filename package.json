@@ -1,6 +1,6 @@
 {
   "name": "@lango-project/lango-server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A small JSON HTTP server for Lango applications.",
   "type": "module",
   "license": "Apache-2.0",

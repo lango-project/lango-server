@@ -5,6 +5,7 @@ import js "node:assert/strict" as check
 import js global process
 import js global Promise
 import js global Object
+import js global Buffer
 import js global Number
 import js global fetch
 import js global setTimeout
@@ -92,11 +93,27 @@ stop(state)
         capture timer
         clearTimeout(timer)
 
+logged(state, remaining)
+    if state.errorText.includes("middleware_handlers.lango:")
+        return Promise/resolve(state.errorText)
+    if remaining == 0
+        throw "Missing source diagnostic: ${state.errorText}"
+    pending = new Promise((resolve)
+        setTimeout(resolve, 10)
+    )
+    return chain pending
+      then(ignored)
+        capture state
+        capture remaining
+        return logged(state, remaining - 1)
+
 test "packed npm consumer runs exported XML includes and standalone SIGTERM shutdown"
     root = process.cwd()
     dir = fs/mkdtempSync(path/join(root, ".test-output", "consumer-"))
     state = {
         server: null
+        authorization: null
+        clientId: null
     }
     try
         packed = from_json(npm(["pack", "--ignore-scripts", "--json", "--pack-destination", dir], root))
@@ -122,6 +139,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         })
         fs/copyFileSync(path/join(root, ".test-output", "middleware_handlers.mjs"), path/join(pkg, "middleware_handlers.mjs"))
         fs/copyFileSync(path/join(root, ".test-output", "payload.mjs"), path/join(pkg, "payload.mjs"))
+        fs/copyFileSync(path/join(root, ".test-output", "middleware_handlers.mjs.map"), path/join(pkg, "middleware_handlers.mjs.map"))
         fs/writeFileSync(path/join(pkg, "package.json"), to_json({
             name: "@lango-test/feature"
             type: "module"
@@ -137,6 +155,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         fs/writeFileSync(path/join(pkg, "routes.xml"), "${xml}")
         xml = <routes>
             <include module="@lango-test/feature" path="/mounted"/>
+            <endpoint path="/diagnostic" module="@lango-test/feature/middleware" handler="diagnostic" auth="anonymous"/>
             <middleware name="wrapped" module="@lango-test/feature/middleware" handler="direct"/>
         </routes>
         fs/writeFileSync(path/join(dir, "routes.xml"), "${xml}")
@@ -150,6 +169,7 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         if process.env.LANGO_TEST_REDIS != null
             pollRoutes = <routes>
                 <include module="@lango-test/feature" path="/mounted"/>
+                <endpoint path="/diagnostic" module="@lango-test/feature/middleware" handler="diagnostic" auth="anonymous"/>
                 <longpoll path="/updates" auth="anonymous" waitTimeoutMs="20"/>
                 <middleware name="wrapped" module="@lango-test/feature/middleware" handler="direct"/>
             </routes>
@@ -193,13 +213,44 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
             })
         })
       then(res)
+        capture state
         assert res.status == 200
-        assert is_string(res.headers.get("x-lango-token"))
+        encoded = res.headers.get("x-lango-token")
+        assert is_string(encoded)
+        parts = encoded.split(".")
+        decoded = Buffer/from(parts[1], "base64url")
+        claims = from_json(decoded.toString("utf8"))
+        Object/assign(state, {
+            authorization: "Bearer ${encoded}"
+            clientId: claims.clientId
+        })
         return res.json()
       then(body)
         capture state
         assert body.wrapped.message == "installed"
         assert is_string(body.wrapped.id)
+        return fetch("http://127.0.0.1:${state.server.port}/diagnostic", {
+            method: "POST"
+            headers: {
+                authorization: state.authorization
+                "Content-Type": "application/json"
+            }
+            body: "{}"
+        })
+      then(res)
+        assert res.status == 500
+        return res.json()
+      then(body)
+        capture state
+        assert body.error == "InternalServerError"
+        assert !("stack" in body)
+        assert !("message" in body)
+        return logged(state.server, 100)
+      then(details)
+        capture state
+        assert details.includes("Request failed:")
+        assert details.includes("SyntaxError")
+        assert details.includes("[clientId=${state.clientId}] Request failed:")
         if process.env.LANGO_TEST_REDIS == null
             return null
         return chain fetch("http://127.0.0.1:${state.server.port}/updates", {

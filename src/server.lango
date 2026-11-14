@@ -4,6 +4,8 @@ import "./longpoll_session"
     class LongpollSession
 import "./database"
     prepareDatabase(settings)
+import "./error_details"
+    errorDetails(error)
 import js "node:http" as http
 import js "node:path" as path
 import js "node:module" as modules
@@ -121,7 +123,7 @@ Server:launch()
         pool.on("error", (error)
             @ready.reject(error)
             context log
-            log.err("Worker pool error")
+            log.err("Worker pool error: ${errorDetails(error)}")
         )
         return startupDeadline(@ready.promise, settings.startupTimeoutMs)
       then(ignored)
@@ -192,6 +194,7 @@ Server:messageReceived(message)
     record = @tasks[message.id]
     if message.kind == "prepared"
         record.result = message.result
+        record.clientId = message.clientId
         resetDeadline(record, @definition.settings.eventTimeoutMs)
     if message.kind == "event"
         resetDeadline(record, @definition.settings.eventTimeoutMs)
@@ -443,7 +446,7 @@ Server:settle(record, pending)
         capture record
         if record.result != null
             context log
-            log.err("[${record.id}] Request event interrupted; preserving prepared result")
+            log.err("[${record.id}] [clientId=${record.clientId}] Request event interrupted; preserving prepared result")
         finish(record, record.result, error)
         return null
       finally

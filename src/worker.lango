@@ -12,6 +12,7 @@ global execute = initialize()
 
 initialize()
     global runtime
+    process.setSourceMapsEnabled(true)
     return chain runtime.preload()
       then(ignored)
         capture threads

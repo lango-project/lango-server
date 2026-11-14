@@ -1,3 +1,6 @@
+import "../error_details"
+    errorDetails(error)
+import js global Error
 import "../group"
     class Group
 import js "node:assert/strict" as check
@@ -643,3 +646,17 @@ test "token renewal preserves identity and the last real validation timestamp"
         old.exp = 1
         service.renew(old)
     expectFailure(expired)
+
+
+test "error diagnostics preserve stack traces and thrown messages without serializing arbitrary data"
+    error = new Error("Handler failed")
+    error.stack = "Error: Handler failed\n    at handler (app.lango:8:5)"
+    assert errorDetails(error) == error.stack
+    assert errorDetails("LNG1200: invalid statement") == "LNG1200: invalid statement"
+    assert errorDetails({
+        message: "app.lango:8: LNG1200 invalid statement"
+    }) == "app.lango:8: LNG1200 invalid statement"
+    assert errorDetails({
+        code: "ENOENT"
+        token: "private"
+    }) == "ENOENT"

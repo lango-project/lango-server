@@ -2,6 +2,7 @@ import "./payload"
     class Payload
 import js "node:fs" as fs
 import js "node:worker_threads" as threads
+import js global JSON
 import js global Promise
 import js global setTimeout
 
@@ -15,6 +16,7 @@ export business(input)
 export asynchronous(input)
 export empty(input)
 export fail(input)
+export diagnostic(input)
 export register(input)
 export validate(input)
 export audit(input)
@@ -126,6 +128,9 @@ asynchronous(input)
 
 empty(input)
     return null
+
+diagnostic(input)
+    return JSON/parse("{")
 
 fail(input)
     throw "Private handler failure"
