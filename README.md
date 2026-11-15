@@ -848,3 +848,46 @@ There is no automatic retry.
 
 Request auditing runs once for the physical batch response, not once per internal
 item; an internal result cannot replace the prepared outer HTTP reply.
+
+
+## Verbose diagnostics
+
+Run `lango-server <application-directory> --verbose` (or `npm start -- --verbose`
+in a generated UI application). The flag can appear before or after the directory.
+It enables `LANGO_VERBOSE=1` for the server process and its workers. Normal startup
+keeps debug logs disabled. `LANGO_VERBOSE=1` also enables diagnostics for a server
+started through its library API.
+
+Verbose logs show configuration loading, worker module/export resolution, HTTP
+request paths, queue/dispatch stages, matched routes, handler invocation and
+response status. Verified request identity is included once available. Request
+bodies, authorization headers, signing keys and raw JWTs are not logged.
+
+```lango
+context log
+if log.verbose?
+    log.debug("Preparing optional diagnostic details")
+```
+
+`log.verbose?` is readonly. `debug()` is filtered automatically, while `info()`,
+`warn()` and `err()` remain enabled. Rebuild application modules with Lango JS
+0.1.17 or newer to give their default log objects the same verbose behavior.
+
+
+For browser startup, GET / serves the static HTML shell; it does not invoke an
+application handler. Browser modules subsequently POST / to bootstrap and POST
+/index (or the selected page path) to request the view. Verbose static logs show
+the serving directory and HTTP completion status. Invalid JWTs are rejected
+before handler invocation, with a verbose diagnostic identifying that stage.
+A client with an expired/replaced stored token can therefore load HTML but fail
+its bootstrap POST with 401 before any application log statement runs.
+
+
+HTTP failures are visible without verbose mode: completed 4xx responses use
+`log.warn()` and completed 5xx responses use `log.err()`, with the method, URL
+path, status and dispatched request ID where available. Successful responses
+remain debug-only. JWT rejection reasons are warnings even before a handler is
+invoked; raw JWTs and unverified claims are not logged as client identity.
+Expired or invalid tokens can occur during ordinary session lifetimes, but a
+failed startup is still a logged rejection. Detailed internal failures retain
+their existing exception and identity logs.

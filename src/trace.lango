@@ -1,0 +1,23 @@
+export trace(message)
+export responseLog(id, method, path, status)
+
+trace(message)
+    context log
+    if log.verbose? == true
+        log.debug(message)
+    return null
+
+
+responseLog(id, method, path, status)
+    context log
+    message = "HTTP ${method} ${path} completed status=${status}"
+    if id != null
+        message = "[${id}] ${message}"
+    if status >= 500
+        log.err(message)
+      else
+          if status >= 400
+              log.warn(message)
+            else
+                trace(message)
+    return null

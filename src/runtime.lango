@@ -1,3 +1,5 @@
+import "./trace"
+    trace(message)
 import "./route_pattern"
     routePattern(path)
     matchPath(pattern, path)
@@ -24,6 +26,7 @@ import "./request_identity"
     requestIdentity(id, token)
 import "./error_details"
     errorDetails(error)
+    errorMessage(error)
 
 export class Runtime(definition)
     methods
@@ -45,6 +48,7 @@ Runtime(definition)
     @database = new Database(definition.settings.database, definition.settings.root)
 
 Runtime:preload()
+    trace("Worker ${threads.threadId}: preparing database, middleware, routes and events")
     definitions = @definition.routes
     pending = @database.open()
     if @definition.middlewares != null
@@ -123,6 +127,7 @@ Runtime:prepareEvent(pending, name, spec)
 
 Runtime:target(spec)
     file = spec.module
+    trace("Worker ${threads.threadId}: resolving ${file} export ${spec.handler}")
     if file in @modules
         return Promise/resolve(exported(@modules[file], spec.handler))
     return chain import_module(file)
@@ -168,9 +173,11 @@ Runtime:handle(task)
           else
               claims = @tokens.read(request.headers.authorization)
     catch error
+        log.warn("[${request.id}] ${request.method} ${request.path} Authorization rejected before handler: ${errorMessage(error)}")
         return failure(401, "Unauthorized")
     matched = match(request.path)
     if matched == null
+        trace("[${request.id}] No route matched ${request.path}")
         return failure(404, "RouteNotFound")
     route = matched.route
     input = null
@@ -186,6 +193,7 @@ Runtime:handle(task)
     catch error
         return failure(400, "InvalidPath")
     context token = new Token(claims)
+    trace("${requestIdentity(request.id, token)} Matched route ${matched.route.path}; fresh=${fresh}")
     context db = @database.scope()
     return chain Promise/resolve(null)
       then(ignored)
@@ -221,6 +229,7 @@ Runtime:handle(task)
             }
         if route.kind == "longpoll"
             return null
+        trace("${requestIdentity(request.id, token)} Invoking handler; middleware=${route.middleware != null}")
         handler = route.handler
         middleware = route.middleware
         if middleware != null
@@ -252,6 +261,7 @@ Runtime:handle(task)
             if @definition.settings.requestEvent and "request" in @events
                 return audit(request.id, pollResponse, task.body, pollBody, authorizedClaims)
             return pollResponse
+        trace("${requestIdentity(request.id, token)} Handler completed; serializing response")
         body = JSON/stringify(output)
         if !is_string(body)
             throw "Handler result is not JSON serializable"
@@ -261,6 +271,7 @@ Runtime:handle(task)
         result.headers["x-lango-token"] = @tokens.sign(updated)
         if task.internal != true and @definition.settings.requestEvent and "request" in @events
             return audit(request.id, result, task.body, body, updated)
+        trace("${requestIdentity(request.id, token)} Request completed status=${result.status}")
         return result
       catch(error)
         capture server
@@ -273,6 +284,7 @@ Runtime:handle(task)
         if is_kindof(error, HttpFailure)
             return error.result()
         if error == "TokenExpired" or (is_object(error) and error.status == 401)
+            log.warn("${requestIdentity(request.id, token)} ${request.method} ${request.path} Authorization or validation rejected: Unauthorized")
             return failure(401, "Unauthorized")
         log.err("${requestIdentity(request.id, token)} Request failed: ${errorDetails(error)}")
         return failure(500, "InternalServerError")
@@ -352,6 +364,7 @@ Runtime:event(name, input)
     context token
     context log
     context db
+    trace("${requestIdentity(request.id, token)} Running event ${name}")
     handler = @events[name]
     threads/parentPort/postMessage({
         kind: "event"

@@ -1,3 +1,5 @@
+import "./trace"
+    trace(message)
 import js "node:fs" as fs
 import js "node:path" as path
 import js "serve-static" as files
@@ -110,6 +112,7 @@ StaticFiles:receive(req, res, failed)
     serve = @serve
     if runtime
         serve = @runtime
+    trace("Static ${req.method} ${pathname}: directory=${@settings.directory}; index=${@settings.index}; runtime=${runtime}")
     serve(req, res, done)
     return null
 

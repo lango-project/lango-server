@@ -1,3 +1,6 @@
+import "./trace"
+    trace(message)
+    responseLog(id, method, path, status)
 import "./longpoll_broker"
     class LongpollBroker
 import "./longpoll_session"
@@ -90,6 +93,7 @@ Server:start()
 
 Server:launch()
     settings = @definition.settings
+    trace("Server starting: ${settings.root}; workers=${settings.workers}")
     if settings.static != null
         try
             @static = new StaticFiles(settings.static)
@@ -227,6 +231,7 @@ Server:connected(socket)
     return null
 
 Server:trackResponse(req, res)
+    target = req.url.split("?")[0]
     for @connections as record
         if record.socket == req.socket
             record.active = record.active + 1
@@ -236,9 +241,16 @@ Server:trackResponse(req, res)
             complete = ()
                 capture record
                 capture state
+                capture req
+                capture res
+                capture target
                 if state.done
                     return null
                 state.done = true
+                if res.writableFinished
+                    responseLog(res.langoRequestId, req.method, target, res.statusCode)
+                  else
+                      trace("HTTP ${req.method} ${target} connection closed before response completed")
                 record.active = record.active - 1
                 if @state == "closing" and record.active == 0
                     record.socket.end()
@@ -255,6 +267,7 @@ Server:receive(req, res)
     )
     if @state != "running"
         return rejectHttp(req, res, 503, "Unavailable")
+    trace("HTTP ${req.method} ${req.url.split('?')[0]}")
     if @static != null and (req.method == "GET" or req.method == "HEAD")
         failed = (status, code)
             capture res
@@ -303,6 +316,9 @@ Server:submit(req, res, body)
         return null
       catch(error)
         capture res
+        capture req
+        context log
+        log.err("HTTP ${req.method} ${req.url.split('?')[0]} request failed: ${errorDetails(error)}")
         send(res, failure(500, "InternalServerError"))
         return null
 
@@ -363,6 +379,8 @@ Server:dispatch(req, res, body, authorize = false, token = null, pollResult = nu
     if @state != "running" or (@active >= settings.workers and @waiting.length >= settings.maxQueue)
         return Promise/resolve(failure(503, "Unavailable"))
     id = crypto/randomUUID()
+    res.langoRequestId = id
+    trace("[${id}] Queued request ${req.method} ${req.url}")
     record = {
         id: id
         task: {
@@ -430,6 +448,7 @@ Server:pump()
         record = @waiting.shift()
         record.started = true
         @active = @active + 1
+        trace("[${record.id}] Dispatching to worker")
         pending = @pool.run(record.task, {
             signal: record.controller.signal
         })
@@ -533,6 +552,7 @@ Server:destroyPool()
         return pool.destroy()
 
 Server:send(res, result)
+    trace("HTTP response status=${result.status}")
     if @state == "closing"
         result.headers.connection = "close"
     return write(res, result)
@@ -556,6 +576,8 @@ write(res, result)
         res.writeHead(result.status, result.headers)
         res.end(result.body)
     catch error
+        context log
+        log.err("[${res.langoRequestId}] Response write failed: ${errorDetails(error)}")
         res.destroy()
     return null
 
@@ -569,9 +591,21 @@ rejectHttp(req, res, status, code)
     return write(res, failure(status, code))
 
 main(args)
-    if args.length != 1
-        throw "Usage: lango-server <application-directory>"
-    server = new Server(args[0])
+    directory = null
+    verbose = false
+    for args as arg
+        if arg == "--verbose"
+            verbose = true
+          else
+              if arg.startsWith("--") or directory != null
+                  throw "Usage: lango-server <application-directory> [--verbose]"
+              directory = arg
+    if directory == null
+        throw "Usage: lango-server <application-directory> [--verbose]"
+    if verbose
+        process.env.LANGO_VERBOSE = "1"
+    trace("Loading server configuration: ${directory}")
+    server = new Server(directory)
     stop = ()
         capture server
         return chain server.close()

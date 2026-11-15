@@ -1,9 +1,19 @@
 export errorDetails(error)
+export errorMessage(error)
 
 errorDetails(error)
     if is_object(error)
         if is_string(error.stack) and error.stack != ""
             return error.stack
+        if is_string(error.message) and error.message != ""
+            return error.message
+        if is_string(error.code)
+            return error.code
+    return "${error}"
+
+
+errorMessage(error)
+    if is_object(error)
         if is_string(error.message) and error.message != ""
             return error.message
         if is_string(error.code)

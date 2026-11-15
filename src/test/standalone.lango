@@ -22,12 +22,15 @@ npm(args, directory)
     })
     return output
 
-launch(directory)
+launch(directory, verbose = false)
     file = path/join(directory, "node_modules", "@lango-project", "lango-server", "dist", "cli", "server.mjs")
     env = Object/assign({}, process.env, {
         LANGO_JWT_KEY: "01234567890123456789012345678901"
     })
-    child = children/spawn(process.execPath, [file, directory], {
+    args = [file, directory]
+    if verbose
+        args.add("--verbose")
+    child = children/spawn(process.execPath, args, {
         cwd: directory
         env: env
         stdio: ["ignore", "pipe", "pipe"]
@@ -45,7 +48,7 @@ launch(directory)
         capture state
         capture ready
         state.text = "${state.text}${chunk}"
-        if state.text.includes("Listening on") and state.text.includes("\n")
+        if state.port == null and state.text.includes("Listening on") and state.text.includes("\n")
             index = state.text.lastIndexOf(":")
             state.port = Number/parseInt(state.text.slice(index + 1), 10)
             ready.resolve(state)
@@ -93,8 +96,8 @@ stop(state)
         capture timer
         clearTimeout(timer)
 
-logged(state, remaining)
-    if state.errorText.includes("middleware_handlers.lango:")
+logged(state, remaining, needle = "middleware_handlers.lango:")
+    if state.errorText.includes(needle)
         return Promise/resolve(state.errorText)
     if remaining == 0
         throw "Missing source diagnostic: ${state.errorText}"
@@ -105,7 +108,8 @@ logged(state, remaining)
       then(ignored)
         capture state
         capture remaining
-        return logged(state, remaining - 1)
+        capture needle
+        return logged(state, remaining - 1, needle)
 
 test "packed npm consumer runs exported XML includes and standalone SIGTERM shutdown"
     root = process.cwd()
@@ -192,6 +196,39 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         })
         throw error
     return chain launch(dir)
+      then(quiet)
+        capture state
+        Object/assign(state, {
+            server: quiet
+        })
+        assert !quiet.text.includes("[DEBUG]")
+        return fetch("http://127.0.0.1:${quiet.port}/diagnostic", {
+            method: "POST"
+            headers: {
+                "Content-Type": "application/json"
+                Authorization: "Bearer obsolete-test-token"
+            }
+            body: "{}"
+        })
+      then(res)
+        capture state
+        assert res.status == 401
+        return fetch("http://127.0.0.1:${state.server.port}/missing.js")
+      then(res)
+        capture state
+        assert res.status == 404
+        return logged(state.server, 100, "status=404")
+      then(details)
+        capture state
+        assert details.includes("[WARN]")
+        assert details.includes("Authorization rejected before handler: InvalidToken")
+        assert details.includes("status=401")
+        assert !details.includes("obsolete-test-token")
+        assert !state.server.text.includes("[DEBUG]")
+        return stop(state.server)
+      then(ignored)
+        capture dir
+        return launch(dir, true)
       then(server)
         capture state
         state.server = server
@@ -248,6 +285,13 @@ test "packed npm consumer runs exported XML includes and standalone SIGTERM shut
         return logged(state.server, 100)
       then(details)
         capture state
+        assert state.server.text.includes("[DEBUG] Loading server configuration:")
+        assert state.server.text.includes("Static GET /: directory=")
+        assert state.server.text.includes("HTTP GET / completed status=200")
+        assert state.server.text.includes("Queued request POST /diagnostic")
+        assert state.server.text.includes("Dispatching to worker")
+        assert state.server.text.includes("resolving @lango-test") or state.server.text.includes(" export diagnostic")
+        assert state.server.text.includes("Invoking handler")
         assert details.includes("Request failed:")
         assert details.includes("SyntaxError")
         assert details.includes("[clientId=${state.clientId}] [sessionId=diagnostic-session] [userId=diagnostic-user] Request failed:")

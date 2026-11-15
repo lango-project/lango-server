@@ -1,3 +1,5 @@
+import "../trace"
+    responseLog(id, method, path, status)
 import "../request_identity"
     requestIdentity(id, token)
 import "../error_details"
@@ -675,3 +677,28 @@ test "request identity includes optional token IDs only when present"
     assert requestIdentity("request", token) == "${base} [sessionId=session-1] [userId=0]"
     token.set("sessionId", null)
     assert requestIdentity("request", token) == "${base} [userId=0]"
+
+
+captureResponseLogs(entries)
+    warn = (message)
+        capture entries
+        entries.add("warn:${message}")
+    err = (message)
+        capture entries
+        entries.add("err:${message}")
+    context log = {
+        verbose: false
+        warn: warn
+        err: err
+    }
+    responseLog("request-1", "POST", "/", 401)
+    responseLog("request-2", "POST", "/save", 503)
+    responseLog(null, "GET", "/", 200)
+    return null
+
+test "HTTP failures log at warning or error level without verbose mode"
+    entries = []
+    captureResponseLogs(entries)
+    assert entries.length == 2
+    assert entries[0] == "warn:[request-1] HTTP POST / completed status=401"
+    assert entries[1] == "err:[request-2] HTTP POST /save completed status=503"
