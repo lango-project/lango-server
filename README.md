@@ -465,7 +465,17 @@ until their own expiry unless the application's Validate policy revokes them.
 Event modules and function names are strings, resolved during worker startup.
 Promise results are supported, and events run under the request's contexts.
 
-* **register(input)** runs for a tokenless request after assigning `clientId`,
+* **resume(input)** optionally runs for tokenless requests before creating a
+  token. Verify an independent credential (for example, an HttpOnly cookie in
+  your database) and return its existing server-issued clientId (UUID v4), or
+  null for a new client. Request/response/db/log contexts are available;
+  `context token` is null. Never trust an input clientId as identity proof.
+  A restored identity gets a clean token with no old permissions/custom claims,
+  skips Register, and always runs Validate before endpoint authorization.
+  Invalid return values or failures prevent the handler and publish no token.
+  Supplied JWTs are verified first: invalid/expired JWTs never fall back to Resume.
+  Without this event, tokenless requests receive a new clientId as before.
+* **register(input)** runs for a new client after assigning `clientId`,
   before endpoint authorization. It can initialize custom token claims. Failure
   prevents the handler and publishes no token. Return values are ignored; throw
   or reject to fail registration. It is not an account-creation

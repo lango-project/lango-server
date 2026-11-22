@@ -86,7 +86,7 @@ Routes:longpoll(spec)
     return @this
 
 Routes:event(spec)
-    if !contains(["register", "validate", "request"], spec.name)
+    if !contains(["resume", "register", "validate", "request"], spec.name)
         throw "Unknown event: ${spec.name}"
     if spec.name in @events
         throw "Duplicate event: ${spec.name}"

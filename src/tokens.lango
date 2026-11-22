@@ -4,22 +4,29 @@ import js global Object
 import js global Date
 import js global Math
 import js global Number
+import js global RegExp
 
 export class Tokens(settings)
     methods
         read(header)
         sign(claims)
-        create()
+        create(clientId = null)
         renew(claims)
 
 Tokens(settings)
     @settings = settings
 
-Tokens:create()
+Tokens:create(clientId = null)
+    if clientId == null
+        clientId = crypto/randomUUID()
+      else
+          pattern = new RegExp("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+          if !is_string(clientId) or !pattern.test(clientId)
+              throw "Resume must return an existing server clientId or null"
     settings = @settings
     now = Math/floor(Date/now() / 1000)
     return {
-        clientId: crypto/randomUUID()
+        clientId: clientId
         auth: ""
         iat: now
         exp: now + settings.ttlSeconds
