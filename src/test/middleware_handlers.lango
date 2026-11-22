@@ -42,7 +42,6 @@ rejectRoutes(routes)
     return Promise/reject("Invalid middleware configuration")
 
 wrap(handler, path, input)
-    context request
     context response
     context commands = []
     record("before")
@@ -51,8 +50,6 @@ wrap(handler, path, input)
     return chain Promise/resolve(handler(input))
       then(output)
         capture threads
-        capture request
-        capture commands
         capture input
         capture path
         record("after")
@@ -80,7 +77,6 @@ invalidOutput(handler, path, input)
     return output
 
 transaction(handler, path, input)
-    context db
     start_trans()
     return wrap(handler, path, input)
 
@@ -113,16 +109,8 @@ business(input)
     }
 
 asynchronous(input)
-    context commands
-    context request
-    context token
-    context db
     return chain wait(input.ms)
       then(ignored)
-        capture commands
-        capture request
-        capture token
-        capture db
         capture input
         return business(input)
 

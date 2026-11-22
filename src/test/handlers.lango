@@ -15,6 +15,7 @@ export logout(input)
 export fail(input)
 export validate(input)
 export register(input)
+export resume(input)
 export audit(input)
 export pause(input)
 export crash(input)
@@ -27,7 +28,6 @@ echo(input)
     context request
     context token
     context response
-    context log
     if input.status != null
         response.status(input.status)
     response.header("X-Example", "yes")
@@ -130,10 +130,6 @@ record(value)
     return null
 
 pause(input)
-    context request
-    context response
-    context token
-    context log
     if input.block == true
         end = Date/now() + input.ms
         loop while Date/now() < end
@@ -141,17 +137,9 @@ pause(input)
         return echo(input)
     pending = new Promise((resolve)
         capture input
-        capture request
-        capture response
-        capture token
-        capture log
         done = ()
             capture resolve
             capture input
-            capture request
-            capture response
-            capture token
-            capture log
             resolve(echo(input))
         setTimeout(done, input.ms)
     )
@@ -178,3 +166,24 @@ parameters(input)
         path: request.path
         registeredUserId: token.get("pathUserId")
     }
+
+
+resume(input)
+    context request
+    context response
+    context token
+    assert token == null
+    # Fixed proof is a test fixture only; production must verify an independent credential.
+    switch request.headers["x-resume-proof"]
+      case "test-only-verified-secret"
+          return Promise/resolve("51dbedb3-2b53-4d6e-a674-a943529ff59b")
+      case "invalid-result"
+          return "caller-controlled"
+      case "reject"
+          response.reject(401, "ResumeRejected")
+      case "hang"
+          return pause({
+              ms: 2000
+          })
+      else
+          return null

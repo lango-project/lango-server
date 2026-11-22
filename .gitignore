@@ -4,3 +4,5 @@ examples/application/dist/
 .test-output/
 *.tgz
 examples/database/data/
+
+examples/security/data/

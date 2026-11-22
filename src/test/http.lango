@@ -14,7 +14,7 @@ import "../options"
 import "../tokens"
     class Tokens
 
-withServer(extra, run)
+withServer(extra, run, resumeHandler = null)
     builder = new api/Builder(process.cwd())
     settings = {
         port: 0
@@ -80,6 +80,12 @@ withServer(extra, run)
             name: name
             module: module
             handler: handler
+        })
+    if resumeHandler != null
+        builder.event({
+            name: "resume"
+            module: module
+            handler: resumeHandler
         })
     server = builder.build()
     return chain server.start()
@@ -746,3 +752,75 @@ test "worker routing merges decoded path parameters before Register and keeps ex
             assert result.token == null
             return null
     return withServer({}, run)
+
+
+test "resume restores only client identity, skips Register and forces Validate"
+    run = (address)
+        return chain call(address, "/echo", {}, null, {
+            "x-resume-proof": "test-only-verified-secret"
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body.clientId == "51dbedb3-2b53-4d6e-a674-a943529ff59b"
+            assert result.body.registered == null and result.body.auth == ""
+            return call(address, "/echo", {}, null, {
+                "x-resume-proof": "test-only-verified-secret"
+                "x-validate": "false"
+            })
+          then(result)
+            capture address
+            assert result.status == 401 and result.token == null
+            return call(address, "/echo", {}, null, {
+                "x-resume-proof": "test-only-verified-secret"
+                "x-register": "fail"
+            })
+          then(result)
+            capture address
+            assert result.status == 200
+            return call(address, "/echo")
+          then(result)
+            capture address
+            assert result.status == 200 and result.body.registered
+            assert result.body.clientId != "51dbedb3-2b53-4d6e-a674-a943529ff59b"
+            return call(address, "/admin/private", {}, null, {
+                "x-resume-proof": "test-only-verified-secret"
+            })
+          then(result)
+            assert result.status == 401 and result.token == null
+    return withServer({}, run, "resume")
+
+test "resume cannot bypass supplied JWT verification and malformed identity fails closed"
+    run = (address)
+        return chain call(address, "/echo", {}, "invalid-token", {
+            "x-resume-proof": "test-only-verified-secret"
+        })
+          then(result)
+            capture address
+            assert result.status == 401 and result.token == null
+            return call(address, "/echo", {}, null, {
+                "x-resume-proof": "invalid-result"
+            })
+          then(result)
+            capture address
+            assert result.status == 500 and result.token == null
+            return call(address, "/echo", {}, null, {
+                "x-resume-proof": "reject"
+            })
+          then(result)
+            assert result.status == 401 and result.body.error == "ResumeRejected"
+            assert result.token == null
+    return withServer({}, run, "resume")
+
+test "resume respects event deadline and replaces the blocked worker"
+    run = (address)
+        return chain call(address, "/echo", {}, null, {
+            "x-resume-proof": "hang"
+        })
+          then(result)
+            capture address
+            assert result.status == 504 and result.token == null
+            return call(address, "/echo")
+          then(result)
+            assert result.status == 200
+    return withServer({}, run, "resume")

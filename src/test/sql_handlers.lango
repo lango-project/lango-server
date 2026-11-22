@@ -88,10 +88,8 @@ handle(input)
           return false
       case "async"
           pending = new Promise((resolve)
-              capture db
               capture input
               done = ()
-                  capture db
                   capture input
                   capture resolve
                   resolve(lookup(input.id))

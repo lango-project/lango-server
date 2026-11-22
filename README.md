@@ -76,7 +76,7 @@ never publish token changes. Private exception details are not sent to clients.
 
 A worker processes one request at a time, including its Promise and events.
 Synchronous work does not block the main HTTP loop. Promise callbacks still use
-Lango's explicit `capture` rules; capture any contexts needed by later callbacks.
+Lango's explicit `capture` rules for ordinary locals; active contexts propagate automatically.
 Workers retain their loaded modules between requests. Module-level state is
 worker-local, not shared or client-specific. An optional configured database is used automatically by SQL; application schema and migrations remain application-owned.
 
@@ -501,7 +501,7 @@ Promise results are supported, and events run under the request's contexts.
   the successful response. Enabling this event exposes application input/output
   to its configured handler; redact credentials and other sensitive fields there.
 
-Each event has `eventTimeoutMs`. The request deadline covers queueing, Register,
+Each event has `eventTimeoutMs`. The request deadline covers queueing, Resume, Register,
 Validate, and the handler; Request has its own event deadline after the result is
 prepared. A hard timeout terminates the worker and the pool replaces it. Tasks
 are never automatically retried: worker termination cannot roll back completed
@@ -581,7 +581,7 @@ builder.configure({
 ```
 
 Each request worker owns one persistent connection. The server creates a fresh
-DB scope before Register/Validate and keeps it available to the handler. Request
+DB scope before Resume/Register/Validate and keeps it available to the handler. Request
 gets a separate clean scope after the handler result is serialized. Scopes cannot
 be reused after completion. Physical connections are released on shutdown; worker
 replacement discards the old connection and creates a new one. If DB configuration
@@ -608,7 +608,9 @@ findCustomer(input)
 `start_trans()`, `commit_trans()`, `rollback_trans()`, `trans_state()` use the active
 database context across separately compiled runtime copies. SQL functions do not
 need a `context db` declaration. Declare it only when directly accessing the scope
-object; asynchronous callbacks retain contexts using the normal capture rules.
+object. All active contexts propagate to Lango callbacks automatically, including
+when SQL is used only by a downstream function. No `capture db` is needed.
+A callback cannot reuse a database scope after that scope has closed.
 
 Transactions are explicit. The server never implicitly commits a transaction.
 An open transaction at successful scope completion is rolled back and reported as
@@ -901,3 +903,17 @@ invoked; raw JWTs and unverified claims are not logged as client identity.
 Expired or invalid tokens can occur during ordinary session lifetimes, but a
 failed startup is still a logged rejection. Detailed internal failures retain
 their existing exception and identity logs.
+
+
+## Security policy example
+
+The [security guide](docs/security.md) and [runnable Lango example](examples/security/README.md)
+cover anonymous browser quotas, client/login attribution, remembered login,
+password reauthentication, sudo-style admin elevation, global account bans and
+selected-client revocation. JWTs are bound to a separate HttpOnly browser cookie
+and live database state; a copied JWT alone is insufficient. The guide explicitly
+covers cookie theft, XSS and the remaining UI integration boundaries.
+
+Run `npm run test:security` for the isolated two-worker HTTP regression suite.
+This is opt-in application policy, not a change to every server application's
+existing authentication behavior.
