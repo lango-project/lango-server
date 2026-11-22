@@ -78,7 +78,7 @@ A worker processes one request at a time, including its Promise and events.
 Synchronous work does not block the main HTTP loop. Promise callbacks still use
 Lango's explicit `capture` rules; capture any contexts needed by later callbacks.
 Workers retain their loaded modules between requests. Module-level state is
-worker-local, not shared or client-specific. An optional configured SQL database is available through `context db`; application schema and migrations remain application-owned.
+worker-local, not shared or client-specific. An optional configured database is used automatically by SQL; application schema and migrations remain application-owned.
 
 ## Static files
 
@@ -582,7 +582,6 @@ Application code uses Lango SQL rather than a driver API:
 
 ```lango
 findCustomer(input)
-    context db
     row = SQL
         select id, name from customer where id = :id
     row.id = input.id
@@ -597,8 +596,9 @@ findCustomer(input)
 
 **Build all SQL application modules with lango-js 0.1.13 or newer.** SQL and
 `start_trans()`, `commit_trans()`, `rollback_trans()`, `trans_state()` use the active
-db context across separately compiled runtime copies. Promise callbacks that use
-SQL should declare/capture db using the normal context capture rules.
+database context across separately compiled runtime copies. SQL functions do not
+need a `context db` declaration. Declare it only when directly accessing the scope
+object; asynchronous callbacks retain contexts using the normal capture rules.
 
 Transactions are explicit. The server never implicitly commits a transaction.
 An open transaction at successful scope completion is rolled back and reported as

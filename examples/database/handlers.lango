@@ -3,7 +3,6 @@ import js "node:crypto" as crypto
 export save(input)
 
 save(input)
-    context db
     context token
     schema = SQL
         create table if not exists notes (id text primary key, message text not null)

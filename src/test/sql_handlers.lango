@@ -129,7 +129,6 @@ handle(input)
           throw "Unknown database test action"
 
 insert(input)
-    context db
     statement = SQL
         insert into lango_server_items (id, value, amount)
         values (:id, :value, :amount)
@@ -140,7 +139,6 @@ insert(input)
     return null
 
 lookup(id)
-    context db
     query = SQL
         select id, value, amount from lango_server_items where id = :id
     query.id = id
@@ -154,7 +152,6 @@ lookup(id)
     return null
 
 register(input)
-    context db
     context token
     query = SQL
         select 1 as ready
@@ -164,7 +161,6 @@ register(input)
     return null
 
 validate(input)
-    context db
     context request
     query = SQL
         select case when :allowed then 1 else 0 end as allowed
@@ -174,7 +170,6 @@ validate(input)
     return query.allowed == 1
 
 audit(metadata)
-    context db
     if trans_state() != null
         throw "Handler transaction leaked into Request event"
     input = from_json(metadata.input)
