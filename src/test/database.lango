@@ -346,7 +346,7 @@ validationScenario(address, id)
         assert result.status == 200
         return failureScenario(address, id)
 
-test "httpStatus rolls back its SQL scope without publishing a token"
+test "controlled HTTP rejection rolls back its SQL scope without publishing a token"
     run = (address)
         return chain call(address, {
             action: "schema"

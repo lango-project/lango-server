@@ -27,7 +27,7 @@ withServer(extra, run, resumeHandler = null)
     Object/assign(settings, extra)
     builder.configure(settings)
     module = path/resolve(".test-output/handlers.mjs")
-    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized", "renew", "statusReply"] as name
+    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized", "renew", "rejectReply"] as name
         builder.endpoint({
             path: "/${name}"
             module: module
@@ -147,10 +147,10 @@ wait(ms)
     )
     return pending
 
-test "public package exports Server Builder and httpStatus"
+test "public package exports only Server and Builder"
     keys = Object/keys(api)
     keys.sort()
-    check/deepStrictEqual(keys, ["Builder", "Server", "httpStatus"])
+    check/deepStrictEqual(keys, ["Builder", "Server"])
 
 test "HTTP handler runs in a worker with contexts, registration, headers and JSON"
     run = (address)
@@ -860,9 +860,9 @@ test "Register receives observed IP and User-Agent independently of JSON metadat
     return withServer({}, run)
 
 
-test "httpStatus rejects with an error code in sync and Promise handlers without publishing token changes"
+test "response.reject stops sync and Promise handlers without publishing token changes"
     run = (address)
-        return chain call(address, "/statusReply", {
+        return chain call(address, "/rejectReply", {
             status: 401
             code: "InvalidCredentials"
         })
@@ -872,7 +872,7 @@ test "httpStatus rejects with an error code in sync and Promise handlers without
             assert result.body.error == "InvalidCredentials"
             assert result.challenge == "Bearer"
             assert result.token == null
-            return call(address, "/statusReply", {
+            return call(address, "/rejectReply", {
                 status: 403
                 code: "Forbidden"
                 promise: true
@@ -882,7 +882,7 @@ test "httpStatus rejects with an error code in sync and Promise handlers without
             assert result.status == 403
             assert result.body.error == "Forbidden"
             assert result.token == null
-            return call(address, "/statusReply", {
+            return call(address, "/rejectReply", {
                 status: 200
                 code: "InvalidCredentials"
             })
@@ -891,7 +891,7 @@ test "httpStatus rejects with an error code in sync and Promise handlers without
             assert result.status == 500
             assert result.body.error == "InternalServerError"
             assert result.token == null
-            return call(address, "/statusReply", {
+            return call(address, "/rejectReply", {
                 status: 401
                 code: "bla bla"
             })

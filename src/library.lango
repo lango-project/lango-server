@@ -5,11 +5,6 @@ import "./builder"
 
 export global Server
 export global Builder
-export httpStatus(status, code)
 
 global Server = ServerClass
 global Builder = BuilderClass
-
-httpStatus(status, code)
-    context response
-    return response.reject(status, code)
