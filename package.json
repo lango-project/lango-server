@@ -37,7 +37,7 @@
     "test:postgres": "lango build src/test/sql_handlers.lango --out .test-output/sql_handlers.mjs && lango test src/test/database.lango --build-dir .test-output/database-postgres",
     "test:longpoll": "lango build src/test/longpoll_handlers.lango --out .test-output/longpoll_handlers.mjs && lango test src/test/longpoll.lango --build-dir .test-output/longpoll && lango build src/test/middleware_handlers.lango --out .test-output/middleware_handlers.mjs && lango test src/test/standalone.lango --build-dir .test-output/standalone-longpoll",
     "test:middleware": "lango build src/test/handlers.lango --out .test-output/handlers.mjs && lango build src/test/middleware_handlers.lango --out .test-output/middleware_handlers.mjs && lango test src/test/middleware.lango --build-dir .test-output/middleware",
-    "test:security": "lango build examples/security/handlers.lango --out examples/security/dist/handlers.mjs && lango build examples/security/setup.lango --out examples/security/dist/setup.mjs --executable && lango test src/test/security.lango --build-dir .test-output/security"
+    "test:security": "lango build examples/security/handlers.lango --out .test-output/security-handlers.mjs && lango build examples/security/setup.lango --out examples/security/dist/setup.mjs --executable && lango test src/test/security.lango --build-dir .test-output/security"
   },
   "dependencies": {
     "jsonwebtoken": "^9.0.3",

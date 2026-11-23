@@ -1,3 +1,4 @@
+import js "@lango-project/lango-server" as api
 import js global process
 import js global Promise
 import js global setTimeout
@@ -12,7 +13,6 @@ global retained = null
 handle(input)
     context db
     context token
-    context response
     global retained
     switch input.action
       case "schema"
@@ -38,7 +38,7 @@ handle(input)
       case "reject"
           start_trans()
           insert(input)
-          return response.reject(409, "Conflict")
+          return api/httpStatus(409, "Conflict")
       case "throw"
           start_trans()
           insert(input)

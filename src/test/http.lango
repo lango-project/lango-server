@@ -27,7 +27,7 @@ withServer(extra, run, resumeHandler = null)
     Object/assign(settings, extra)
     builder.configure(settings)
     module = path/resolve(".test-output/handlers.mjs")
-    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized", "renew"] as name
+    for ["echo", "login", "logout", "fail", "pause", "crash", "circular", "serialized", "renew", "statusReply"] as name
         builder.endpoint({
             path: "/${name}"
             module: module
@@ -126,6 +126,7 @@ call(address, endpoint, input = null, token = null, extra = null)
                 token: res.headers.get("x-lango-token")
                 marker: res.headers.get("x-example")
                 retry: res.headers.get("retry-after")
+                challenge: res.headers.get("www-authenticate")
             }
 
 staleToken()
@@ -146,10 +147,10 @@ wait(ms)
     )
     return pending
 
-test "public package exports only Server and Builder"
+test "public package exports Server Builder and httpStatus"
     keys = Object/keys(api)
     keys.sort()
-    check/deepStrictEqual(keys, ["Builder", "Server"])
+    check/deepStrictEqual(keys, ["Builder", "Server", "httpStatus"])
 
 test "HTTP handler runs in a worker with contexts, registration, headers and JSON"
     run = (address)
@@ -856,4 +857,51 @@ test "Register receives observed IP and User-Agent independently of JSON metadat
             assert result.body.registration.userAgent == ""
             assert !("ip" in result.body.input)
             assert !("userAgent" in result.body.input)
+    return withServer({}, run)
+
+
+test "httpStatus rejects with an error code in sync and Promise handlers without publishing token changes"
+    run = (address)
+        return chain call(address, "/statusReply", {
+            status: 401
+            code: "InvalidCredentials"
+        })
+          then(result)
+            capture address
+            assert result.status == 401
+            assert result.body.error == "InvalidCredentials"
+            assert result.challenge == "Bearer"
+            assert result.token == null
+            return call(address, "/statusReply", {
+                status: 403
+                code: "Forbidden"
+                promise: true
+            })
+          then(result)
+            capture address
+            assert result.status == 403
+            assert result.body.error == "Forbidden"
+            assert result.token == null
+            return call(address, "/statusReply", {
+                status: 200
+                code: "InvalidCredentials"
+            })
+          then(result)
+            capture address
+            assert result.status == 500
+            assert result.body.error == "InternalServerError"
+            assert result.token == null
+            return call(address, "/statusReply", {
+                status: 401
+                code: "bla bla"
+            })
+          then(result)
+            capture address
+            assert result.status == 500
+            assert result.body.error == "InternalServerError"
+            assert result.token == null
+            return call(address, "/echo")
+          then(result)
+            assert result.status == 200
+            assert result.body.auth == ""
     return withServer({}, run)

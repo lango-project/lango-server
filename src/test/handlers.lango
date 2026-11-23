@@ -1,3 +1,4 @@
+import js "@lango-project/lango-server" as api
 import "./payload"
     class Payload
 import js "node:fs" as fs
@@ -22,6 +23,7 @@ export crash(input)
 export circular(input)
 export serialized(input)
 export renew(input)
+export statusReply(input)
 
 
 echo(input)
@@ -66,7 +68,7 @@ renew(input)
           throw "Private renewal failure"
       case "reject"
           response.header("Retry-After", "60")
-          return response.reject(429, "RenewalRejected")
+          return api/httpStatus(429, "RenewalRejected")
       case "circular"
           return circular(input)
       case "delay"
@@ -195,3 +197,15 @@ resume(input)
           })
       else
           return null
+
+
+statusReply(input)
+    context token
+    token.AddAuth("admin")
+    if input.promise == true
+        return chain Promise/resolve(input.code)
+          then(code)
+            capture input
+            capture api
+            return api/httpStatus(input.status, code)
+    return api/httpStatus(input.status, input.code)

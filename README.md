@@ -1,8 +1,8 @@
 # Lango Server
 
-A JSON HTTP server written in Lango. Its public package API contains two classes:
-`Server` and `Builder`. Application handlers are exported functions identified by
-module and function names. Each request runs in one worker; worker setup stays
+A JSON HTTP server written in Lango. Its public package API contains the `Server`
+and `Builder` classes and the `httpStatus(status, code)` response helper. Application
+handlers are exported functions identified by module and function names. Each request runs in one worker; worker setup stays
 inside the server.
 
 This is a new package. It does not migrate or modify Lango API, UI, or Client.
@@ -413,14 +413,35 @@ timestamps are checked. Keys are never generated or stored by the server.
 
 Handlers and events can declare `context request`, `response`, `token`, and `log`.
 Request metadata is read-only: `id`, `method`, `path`, `headers`, `remoteAddress`.
-Response supports `status(code)`, `header(name, value)` and `reject(status, code)`;
-the handler return value supplies its JSON body. Transport/token headers remain
-server-owned. `reject` throws a controlled HTTP failure (400–599) with a short
-error code, for example `response.reject(400, "InvalidInput")`. Codes start with
-an ASCII letter and contain at most 64 letters, digits or underscores. Configured
-response headers are preserved. Rejections roll back open SQL transactions and
-send `{ error: code }` without a token; committed side effects are not undone.
-Unexpected exceptions still produce a generic 500.
+Use the exported `httpStatus(status, code)` helper to return an HTTP status without
+accessing the response object:
+
+```lango
+import js "@lango-project/lango-server" as server
+
+export restricted(input)
+
+restricted(input)
+    return server/httpStatus(401, "InvalidCredentials")
+```
+
+The second argument is an error code, not a response body. The example sends
+status 401 with `{ "error": "InvalidCredentials" }`. Status must be an integer
+from 400 to 599. Codes start with an ASCII letter and contain at most 64 ASCII
+letters, digits or underscores. Invalid arguments produce a generic 500.
+
+`httpStatus` uses the active response context internally and has the same behavior
+as `response.reject(status, code)`: it throws a controlled HTTP failure, stops the
+current execution path, rolls back open SQL transactions and publishes no token
+or token changes. Already committed side effects are not undone. Response headers
+are preserved, and 401 includes `WWW-Authenticate: Bearer`. It works from handlers,
+middleware, synchronous helpers and Lango callbacks; use `return httpStatus(...)`
+where the function is in scope, or the namespace form shown above.
+
+Normal successful handler return values remain the JSON response body. Response
+supports `header(name, value)` and the existing `reject(status, code)` API;
+transport/token headers remain server-owned. Unexpected exceptions still produce
+a generic 500.
 
 Tokens arrive in `Authorization: Bearer <jwt>` and successful replies contain
 `X-Lango-Token`. Missing tokens create an anonymous identity with a UUID
