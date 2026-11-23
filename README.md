@@ -476,7 +476,13 @@ Promise results are supported, and events run under the request's contexts.
   Supplied JWTs are verified first: invalid/expired JWTs never fall back to Resume.
   Without this event, tokenless requests receive a new clientId as before.
 * **register(input)** runs for a new client after assigning `clientId`,
-  before endpoint authorization. It can initialize custom token claims. Failure
+  before endpoint authorization. Its input is a shallow copy of the decoded
+  request input (including path parameters), with server-observed `ip` and
+  `userAgent` fields overriding any same-named JSON/path fields. `ip` is the
+  socket peer address; forwarded headers are not trusted. `userAgent` is the
+  User-Agent header (null when absent), not an authenticated identity. These
+  additions do not change the endpoint's original input. It can initialize custom
+  token claims. Failure
   prevents the handler and publishes no token. Return values are ignored; throw
   or reject to fail registration. It is not an account-creation
   guarantee: callers can omit tokens, so application side effects need their own

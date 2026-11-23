@@ -227,7 +227,11 @@ Runtime:process(task, route, input, claims, fresh, restored)
         capture restored
         capture input
         if fresh
-            return event("register", input)
+            registration = Object/assign({}, input, {
+                ip: request.remoteAddress
+                userAgent: request.headers["user-agent"]
+            })
+            return event("register", registration)
         return validate(restored)
       then(validatedAt)
         capture route

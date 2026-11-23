@@ -824,3 +824,36 @@ test "resume respects event deadline and replaces the blocked worker"
           then(result)
             assert result.status == 200
     return withServer({}, run, "resume")
+
+
+test "Register receives observed IP and User-Agent independently of JSON metadata"
+    run = (address)
+        return chain call(address, "/user/007", {
+            inspectRegistration: true
+            ip: "spoofed-body-ip"
+            userAgent: "spoofed-body-agent"
+        }, null, {
+            "User-Agent": "Lango registration test"
+            "X-Forwarded-For": "203.0.113.9"
+        })
+          then(result)
+            capture address
+            assert result.status == 200
+            metadata = result.body.registration
+            assert metadata.ip == "127.0.0.1"
+            assert metadata.userAgent == "Lango registration test"
+            assert is_string(metadata.clientId)
+            assert result.body.registeredUserId == "007"
+            assert result.body.input.ip == "spoofed-body-ip"
+            assert result.body.input.userAgent == "spoofed-body-agent"
+            return call(address, "/user/008", {
+                inspectRegistration: true
+            }, null, {
+                "User-Agent": ""
+            })
+          then(result)
+            assert result.status == 200
+            assert result.body.registration.userAgent == ""
+            assert !("ip" in result.body.input)
+            assert !("userAgent" in result.body.input)
+    return withServer({}, run)

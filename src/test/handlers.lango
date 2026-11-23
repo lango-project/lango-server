@@ -78,6 +78,13 @@ register(input)
     context request
     context token
     token.set("registered", true)
+    if input.inspectRegistration == true
+        token.set("registration", {
+            ip: input.ip
+            userAgent: input.userAgent
+            clientId: token.clientId?
+        })
+        input.ip = "modified-by-register"
     if input.userId != null
         token.set("pathUserId", input.userId)
     if request.headers["x-register"] == "fail"
@@ -165,6 +172,7 @@ parameters(input)
         input: input
         path: request.path
         registeredUserId: token.get("pathUserId")
+        registration: token.get("registration")
     }
 
 
