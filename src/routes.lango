@@ -22,7 +22,7 @@ export class Routes(root)
         addMiddleware(name, spec)
         middlewares()
         longpoll(spec)
-        include(spec, auth = null)
+        include(spec, auth = null, policy = null, reauthSeconds = null)
         xml(file)
         definitions()
         events()
@@ -42,6 +42,10 @@ Routes:endpoint(spec)
         module: resolveModule(item.module, @root)
         handler: item.handler
         auth: item.auth
+        policy: item.policy
+        reauthSeconds: item.reauthSeconds
+        reauthExplicit: item.reauthExplicit
+        legacyAuth: item.legacyAuth
         middleware: item.middleware
     })
     return @this
@@ -86,7 +90,7 @@ Routes:longpoll(spec)
     return @this
 
 Routes:event(spec)
-    if !contains(["resume", "register", "validate", "request"], spec.name)
+    if !contains(["register", "validate", "request"], spec.name)
         throw "Unknown event: ${spec.name}"
     if spec.name in @events
         throw "Duplicate event: ${spec.name}"
@@ -98,8 +102,8 @@ Routes:event(spec)
     }
     return @this
 
-Routes:include(spec, auth = null)
-    includeAt(spec, @root, "", [], auth)
+Routes:include(spec, auth = null, policy = null, reauthSeconds = null)
+    includeAt(spec, @root, "", [], auth, policy, reauthSeconds)
     return @this
 
 Routes:xml(file)
@@ -130,7 +134,7 @@ joinPath(prefix, suffix)
         return "${prefix}/"
     return "${prefix}${suffix}"
 
-Routes:includeAt(spec, directory, prefix, stack, inheritedAuth = null)
+Routes:includeAt(spec, directory, prefix, stack, inheritedAuth = null, inheritedPolicy = null, inheritedReauthSeconds = null)
     if !is_string(spec.module) or spec.module == "" or spec.module.startsWith(".") or spec.module.startsWith("/") or spec.module.startsWith("node:")
         throw "Include requires an npm package name"
     mount = spec.path
@@ -146,10 +150,10 @@ Routes:includeAt(spec, directory, prefix, stack, inheritedAuth = null)
     if combined == "/"
         combined = ""
     file = resolveModule("${spec.module}/routes.xml", directory)
-    readXml(file, combined, path/dirname(file), stack, false, inheritedAuth)
+    readXml(file, combined, path/dirname(file), stack, false, inheritedAuth, inheritedPolicy, inheritedReauthSeconds)
     return null
 
-Routes:readXml(file, prefix, directory, stack, allowEvents, inheritedAuth = null)
+Routes:readXml(file, prefix, directory, stack, allowEvents, inheritedAuth = null, inheritedPolicy = null, inheritedReauthSeconds = null)
     real = fs/realpathSync(file)
     if stack.includes(real)
         throw "Route include cycle: ${real}"
@@ -159,45 +163,54 @@ Routes:readXml(file, prefix, directory, stack, allowEvents, inheritedAuth = null
     attributes(root, [])
     nextStack = stack.slice()
     nextStack.add(real)
-    collect(root, prefix, null, inheritedAuth, directory, nextStack, allowEvents)
+    collect(root, prefix, null, inheritedAuth, directory, nextStack, allowEvents, inheritedPolicy, inheritedReauthSeconds)
     return null
 
-Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack, allowEvents)
+Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack, allowEvents, inheritedPolicy = null, inheritedReauthSeconds = null)
     if parent.innerText().trim() != ""
         throw "Route XML cannot contain text"
     for parent.children() as tag
         spec = tag.attributes()
         mod = spec.module
         auth = spec.auth
+        policy = spec.policy
+        reauthSeconds = spec.reauthSeconds
         if mod == null
             mod = inheritedModule
-        if auth == null
+        if auth == null and policy == null
             auth = inheritedAuth
+            policy = inheritedPolicy
+        if reauthSeconds == null
+            reauthSeconds = inheritedReauthSeconds
         switch tag.tag()
           case "endpoint"
-              attributes(tag, ["path", "module", "handler", "auth"])
+              attributes(tag, ["path", "module", "handler", "auth", "policy", "reauthSeconds"])
               leaf(tag)
               endpoint({
                   path: joinPath(prefix, spec.path)
                   module: resolveModule(mod, directory)
                   handler: spec.handler
                   auth: auth
+                  policy: policy
+                  reauthSeconds: reauthSeconds
               })
           case "longpoll"
-              attributes(tag, ["path", "auth", "waitTimeoutMs", "retentionMs", "maxMessages", "fallback"])
+              attributes(tag, ["path", "auth", "policy", "reauthSeconds", "waitTimeoutMs", "retentionMs", "maxMessages", "fallback"])
               leaf(tag)
               spec.path = joinPath(prefix, spec.path)
               spec.auth = auth
+              spec.policy = policy
+              spec.reauthSeconds = reauthSeconds
               if spec.fallback != null
                   spec.fallback = joinPath(prefix, spec.fallback)
               longpoll(spec)
           case "group"
-              attributes(tag, ["path", "module", "auth"])
-              collect(tag, joinPath(prefix, spec.path), mod, auth, directory, stack, false)
+              attributes(tag, ["path", "module", "auth", "policy", "reauthSeconds"])
+              collect(tag, joinPath(prefix, spec.path), mod, auth, directory, stack, false, policy, reauthSeconds)
           case "include"
               attributes(tag, ["module", "path"])
               leaf(tag)
-              includeAt(spec, directory, prefix, stack, auth)
+              includeAt(spec, directory, prefix, stack, auth, policy, reauthSeconds)
           case "middleware"
               attributes(tag, ["name", "module", "handler", "validate"])
               leaf(tag)
@@ -219,13 +232,15 @@ Routes:collect(parent, prefix, inheritedModule, inheritedAuth, directory, stack,
                   handler: spec.handler
               })
           else
-              attributes(tag, ["path", "module", "handler", "auth"])
+              attributes(tag, ["path", "module", "handler", "auth", "policy", "reauthSeconds"])
               leaf(tag)
               endpoint({
                   path: joinPath(prefix, spec.path)
                   module: resolveModule(mod, directory)
                   handler: spec.handler
                   auth: auth
+                  policy: policy
+                  reauthSeconds: reauthSeconds
                   middleware: tag.tag()
               })
     return null

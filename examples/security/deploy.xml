@@ -1,0 +1,12 @@
+<deploy>
+    <policies reauthSeconds="43200">
+        <policy name="login"/>
+        <policy name="admin" reauthSeconds="300"/>
+    </policies>
+    <client maxAgeSeconds="2592000"/>
+    <origin urlEnv="LANGO_ORIGIN" required="true"/>
+    <http host="127.0.0.1" port="3000" bodyLimit="16384"/>
+    <workers workers="2" maxQueue="16" requestTimeoutMs="15000"/>
+    <jwt keyEnv="LANGO_JWT_KEY" ttlSeconds="900"/>
+    <database type="sqlite" file="data/security.sqlite"/>
+</deploy>

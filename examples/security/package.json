@@ -1,0 +1,19 @@
+{
+  "name": "@lango-example/security",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/handlers.mjs"
+  },
+  "scripts": {
+    "build": "lango build handlers.lango --out dist/handlers.mjs && lango build setup.lango --out dist/setup.mjs --executable",
+    "setup": "node dist/setup.mjs",
+    "start": "lango-server ."
+  },
+  "dependencies": {
+    "@lango-project/lango-server": "file:../.."
+  },
+  "devDependencies": {
+    "@lango-project/lango-js": "^0.1.17"
+  }
+}

@@ -1,0 +1,14 @@
+<routes>
+    <middleware name="security" module="@lango-example/security" handler="guard" validate="checkRoutes"/>
+    <event name="register" module="@lango-example/security" handler="register"/>
+    <security path="/bootstrap" module="@lango-example/security" handler="bootstrap" policy="anonymous"/>
+    <security path="/whoami" module="@lango-example/security" handler="whoami" policy="anonymous"/>
+    <security path="/guest/action" module="@lango-example/security" handler="guestAction" policy="anonymous"/>
+    <security path="/auth/login" module="@lango-example/security" handler="login" policy="anonymous"/>
+    <security path="/auth/logout" module="@lango-example/security" handler="logout" policy="anonymous"/>
+    <security path="/auth/reauth" module="@lango-example/security" handler="reauth" policy="anonymous"/>
+    <security path="/account/clients" module="@lango-example/security" handler="clients" policy="login"/>
+    <security path="/account/revoke-client" module="@lango-example/security" handler="revokeClient" policy="login" reauthSeconds="900"/>
+    <security path="/admin" module="@lango-example/security" handler="admin" policy="admin"/>
+    <security path="/admin/ban" module="@lango-example/security" handler="ban" policy="admin"/>
+</routes>

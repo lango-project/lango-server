@@ -10,12 +10,12 @@ import js global Object
 
 export parameters(input)
 export echo(input)
+export policyEcho(input)
 export login(input)
 export logout(input)
 export fail(input)
 export validate(input)
 export register(input)
-export resume(input)
 export audit(input)
 export pause(input)
 export crash(input)
@@ -177,27 +177,6 @@ parameters(input)
     }
 
 
-resume(input)
-    context request
-    context response
-    context token
-    assert token == null
-    # Fixed proof is a test fixture only; production must verify an independent credential.
-    switch request.headers["x-resume-proof"]
-      case "test-only-verified-secret"
-          return Promise/resolve("51dbedb3-2b53-4d6e-a674-a943529ff59b")
-      case "invalid-result"
-          return "caller-controlled"
-      case "reject"
-          response.reject(401, "ResumeRejected")
-      case "hang"
-          return pause({
-              ms: 2000
-          })
-      else
-          return null
-
-
 rejectReply(input)
     context response
     context token
@@ -208,3 +187,13 @@ rejectReply(input)
             capture input
             return response.reject(input.status, code)
     return response.reject(input.status, input.code)
+
+
+policyEcho(input)
+    context request
+    context token
+    return {
+        route: request.route
+        policies: token.policies?
+        frozen: Object/isFrozen(request.route)
+    }

@@ -5,18 +5,26 @@ import js global clearTimeout
 import "./route_info"
     routeInfo(definitions)
 
-export class ServerContext(definitions = null, refresh = null)
+export class ServerContext(definitions = null, refresh = null, rotate = null)
     methods
         publish(path, key, data)
         cursor(path, key)
         routes()
         refreshTokens(tokens)
+        rotateClient()
 
-ServerContext(definitions = null, refresh = null)
+ServerContext(definitions = null, refresh = null, rotate = null)
     if definitions == null
         definitions = []
     @routes = routeInfo(definitions)
     @refresh = refresh
+    @rotate = rotate
+
+ServerContext:rotateClient()
+    if @rotate == null
+        throw "Managed client identity is unavailable"
+    rotate = @rotate
+    return rotate()
 
 ServerContext:refreshTokens(tokens)
     if @refresh == null

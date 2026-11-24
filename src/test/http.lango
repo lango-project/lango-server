@@ -11,10 +11,12 @@ import js global Date
 import js global setTimeout
 import "../options"
     options(root, supplied = null)
+import "../token"
+    class Token
 import "../tokens"
     class Tokens
 
-withServer(extra, run, resumeHandler = null)
+withServer(extra, run)
     builder = new api/Builder(process.cwd())
     settings = {
         port: 0
@@ -33,6 +35,14 @@ withServer(extra, run, resumeHandler = null)
             module: module
             handler: name
             auth: "anonymous"
+        })
+    for [["/policy/login", "login", 0], ["/policy/admin", "admin", 0], ["/policy/fresh", "login", 60]] as spec
+        builder.endpoint({
+            path: spec[0]
+            module: module
+            handler: "policyEcho"
+            policy: spec[1]
+            reauthSeconds: spec[2]
         })
     for ["login", "admin"] as permission
         builder.endpoint({
@@ -81,12 +91,6 @@ withServer(extra, run, resumeHandler = null)
             module: module
             handler: handler
         })
-    if resumeHandler != null
-        builder.event({
-            name: "resume"
-            module: module
-            handler: resumeHandler
-        })
     server = builder.build()
     return chain server.start()
       then(address)
@@ -126,6 +130,8 @@ call(address, endpoint, input = null, token = null, extra = null)
                 token: res.headers.get("x-lango-token")
                 marker: res.headers.get("x-example")
                 retry: res.headers.get("retry-after")
+                authChange: res.headers.get("x-lango-auth-change")
+                needLogin: res.headers.get("x-lango-need-login")
                 challenge: res.headers.get("www-authenticate")
             }
 
@@ -755,78 +761,6 @@ test "worker routing merges decoded path parameters before Register and keeps ex
     return withServer({}, run)
 
 
-test "resume restores only client identity, skips Register and forces Validate"
-    run = (address)
-        return chain call(address, "/echo", {}, null, {
-            "x-resume-proof": "test-only-verified-secret"
-        })
-          then(result)
-            capture address
-            assert result.status == 200
-            assert result.body.clientId == "51dbedb3-2b53-4d6e-a674-a943529ff59b"
-            assert result.body.registered == null and result.body.auth == ""
-            return call(address, "/echo", {}, null, {
-                "x-resume-proof": "test-only-verified-secret"
-                "x-validate": "false"
-            })
-          then(result)
-            capture address
-            assert result.status == 401 and result.token == null
-            return call(address, "/echo", {}, null, {
-                "x-resume-proof": "test-only-verified-secret"
-                "x-register": "fail"
-            })
-          then(result)
-            capture address
-            assert result.status == 200
-            return call(address, "/echo")
-          then(result)
-            capture address
-            assert result.status == 200 and result.body.registered
-            assert result.body.clientId != "51dbedb3-2b53-4d6e-a674-a943529ff59b"
-            return call(address, "/admin/private", {}, null, {
-                "x-resume-proof": "test-only-verified-secret"
-            })
-          then(result)
-            assert result.status == 401 and result.token == null
-    return withServer({}, run, "resume")
-
-test "resume cannot bypass supplied JWT verification and malformed identity fails closed"
-    run = (address)
-        return chain call(address, "/echo", {}, "invalid-token", {
-            "x-resume-proof": "test-only-verified-secret"
-        })
-          then(result)
-            capture address
-            assert result.status == 401 and result.token == null
-            return call(address, "/echo", {}, null, {
-                "x-resume-proof": "invalid-result"
-            })
-          then(result)
-            capture address
-            assert result.status == 500 and result.token == null
-            return call(address, "/echo", {}, null, {
-                "x-resume-proof": "reject"
-            })
-          then(result)
-            assert result.status == 401 and result.body.error == "ResumeRejected"
-            assert result.token == null
-    return withServer({}, run, "resume")
-
-test "resume respects event deadline and replaces the blocked worker"
-    run = (address)
-        return chain call(address, "/echo", {}, null, {
-            "x-resume-proof": "hang"
-        })
-          then(result)
-            capture address
-            assert result.status == 504 and result.token == null
-            return call(address, "/echo")
-          then(result)
-            assert result.status == 200
-    return withServer({}, run, "resume")
-
-
 test "Register receives observed IP and User-Agent independently of JSON metadata"
     run = (address)
         return chain call(address, "/user/007", {
@@ -904,4 +838,196 @@ test "response.reject stops sync and Promise handlers without publishing token c
           then(result)
             assert result.status == 200
             assert result.body.auth == ""
+    return withServer({}, run)
+
+
+test "configured origin rejects before lifecycle callbacks and accepts only the configured browser origin"
+    run = (address)
+        return chain call(address, "/echo", {}, null, {
+            "x-register": "fail"
+        })
+          then(result)
+            capture address
+            assert result.status == 403 and result.body.error == "OriginRejected"
+            assert result.token == null
+            return call(address, "/echo", {}, null, {
+                Origin: "https://attacker.example"
+            })
+          then(result)
+            capture address
+            assert result.status == 403 and result.token == null
+            return call(address, "/echo", {}, null, {
+                Origin: "https://app.example"
+                "Sec-Fetch-Site": "cross-site"
+            })
+          then(result)
+            capture address
+            assert result.status == 403 and result.token == null
+            return call(address, "/echo", {}, null, {
+                Origin: "https://app.example"
+                "Sec-Fetch-Site": "same-origin"
+            })
+          then(result)
+            assert result.status == 200 and result.body.registered
+    return withServer({
+        origin: {
+            url: "https://app.example"
+        }
+    }, run)
+
+test "optional Origin permits missing headers but does not accept an unrelated Origin"
+    run = (address)
+        return chain call(address, "/echo")
+          then(result)
+            capture address
+            assert result.status == 200
+            return call(address, "/echo", {}, null, {
+                Origin: "null"
+            })
+          then(result)
+            assert result.status == 403 and result.token == null
+    return withServer({
+        origin: {
+            url: "https://app.example"
+            required: false
+        }
+    }, run)
+
+
+policyToken(name, authenticatedAt = null)
+    config = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+    })
+    service = new Tokens(config)
+    token = new Token(service.create())
+    token.addPolicy(name)
+    if authenticatedAt != null
+        token.set("authenticatedAt", authenticatedAt)
+    return service.sign(token.snapshot())
+
+test "built-in policies authorize plain endpoints without middleware and expose readonly route metadata"
+    run = (address)
+        return chain call(address, "/policy/login")
+          then(result)
+            capture address
+            assert result.status == 401 and result.body.error == "LoginRequired"
+            assert result.needLogin == "1"
+            assert result.body.needLogin.policy == "login"
+            assert result.token == null
+            return call(address, "/policy/admin", {}, policyToken("login"))
+          then(result)
+            capture address
+            assert result.status == 403 and result.body.error == "Forbidden"
+            assert result.token == null
+            return call(address, "/policy/admin", {}, policyToken("admin"))
+          then(result)
+            assert result.status == 200
+            assert result.body.frozen
+            assert result.body.route.policy == "admin"
+            assert result.body.route.reauthSeconds == 0
+            assert result.body.policies[0] == "admin"
+    return withServer({}, run)
+
+test "built-in password freshness is checked per request independently of token validation freshness"
+    run = (address)
+        return chain call(address, "/policy/fresh", {}, policyToken("login", Date/now()))
+          then(result)
+            capture address
+            assert result.status == 200
+            return call(address, "/policy/fresh", {
+                reauthSeconds: 0
+                authenticatedAt: Date/now()
+            }, policyToken("login", Date/now() - 120000))
+          then(result)
+            capture address
+            assert result.status == 403 and result.body.error == "ReauthenticationRequired"
+            assert result.token == null
+            return call(address, "/policy/login", {}, policyToken("login", Date/now() - 120000))
+          then(result)
+            capture address
+            assert result.status == 200
+            return call(address, "/policy/fresh", {}, policyToken("login"))
+          then(result)
+            capture address
+            assert result.status == 403 and result.token == null
+            return call(address, "/policy/fresh", {}, policyToken("login", Date/now() + 60000))
+          then(result)
+            assert result.status == 403 and result.body.error == "ReauthenticationRequired"
+    return withServer({}, run)
+
+test "login challenges identify pre-dispatch rejection and replay refuses an account change"
+    run = (address)
+        return chain call(address, "/policy/fresh", {}, policyToken("login"))
+          then(result)
+            capture address
+            assert result.status == 403 and result.needLogin == "1"
+            assert result.body.needLogin.reason == "ReauthenticationRequired"
+            assert result.body.needLogin.reauthSeconds == 60
+            return call(address, "/policy/fresh", {}, policyToken("login", Date/now()), {
+                "X-Lango-Expected-User": to_json("someone-else")
+            })
+          then(result)
+            capture address
+            assert result.status == 409 and result.body.error == "IdentityChanged"
+            assert result.needLogin == null and result.token == null
+            return call(address, "/rejectReply")
+          then(result)
+            assert result.needLogin == null
+    return withServer({}, run)
+
+test "central policy defaults are resolved before workers and reflected in trusted route metadata"
+    builder = new api/Builder(process.cwd())
+    builder.configure({
+        port: 0
+        workers: 1
+        key: "01234567890123456789012345678901"
+        policies: {
+            reauthSeconds: 120
+            items: [{
+                name: "login"
+            }, {
+                name: "admin"
+                reauthSeconds: 300
+            }]
+        }
+    })
+    builder.endpoint({
+        path: "/central"
+        module: path/resolve(".test-output/handlers.mjs")
+        handler: "policyEcho"
+        policy: "login"
+    })
+    server = builder.build()
+    return chain server.start()
+      then(address)
+        return chain call(address, "/central", {}, policyToken("login", Date/now()))
+          then(result)
+            capture address
+            assert result.status == 200
+            assert result.body.route.reauthSeconds == 120
+            return call(address, "/central", {}, policyToken("login", Date/now() - 121000))
+          then(result)
+            assert result.status == 403 and result.needLogin == "1"
+            assert result.body.needLogin.reauthSeconds == 120
+      finally
+        capture server
+        return server.close()
+
+test "successful authentication changes emit an opaque marker while renewal and rejected requests do not"
+    run = (address)
+        return chain call(address, "/login")
+          then(result)
+            capture address
+            assert is_string(result.authChange) and result.authChange.startsWith("v1:")
+            return call(address, "/echo", {}, result.token)
+          then(result)
+            capture address
+            assert result.authChange == null
+            return call(address, "/logout", {}, result.token)
+          then(result)
+            capture address
+            assert is_string(result.authChange) and result.authChange.startsWith("v1:")
+            return call(address, "/policy/login")
+          then(result)
+            assert result.authChange == null
     return withServer({}, run)

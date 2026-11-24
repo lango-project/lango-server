@@ -1,0 +1,30 @@
+import js "@lango-project/lango-js/database" as database
+import js "node:fs" as fs
+import js "node:path" as path
+import js global process
+import "./schema"
+    initialize()
+    createUser(username, password, admin = false)
+
+export main(args)
+
+main(args)
+    if args.length < 1 or args.length > 3
+        throw "Usage: setup <sqlite-file> [<username> [admin]] (password from SECURITY_SETUP_PASSWORD)"
+    if args.length == 3 and args[2] != "admin"
+        throw "Only the optional admin role is supported"
+    fs/mkdirSync(path/dirname(path/resolve(args[0])), {
+        recursive: true
+    })
+    adapter = database/createSqliteAdapter(args[0])
+    context db = adapter
+    try
+        initialize()
+        if args.length == 1
+            println("Initialized security schema")
+          else
+              id = createUser(args[1], process.env.SECURITY_SETUP_PASSWORD, args[2] == "admin")
+              println("Created user ${id}")
+    finally
+        adapter.close()
+    return null

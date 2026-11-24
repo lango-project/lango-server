@@ -1,0 +1,184 @@
+import js "node:crypto" as crypto
+import js global Date
+import js global Object
+import js global Number
+import js global RegExp
+import js global Buffer
+
+export clientOptions(spec, database, origin)
+export class ClientIdentity(settings, database)
+    methods
+        initialize()
+        begin(claims, tokens)
+        publish(identity, claims, response, tokens)
+
+clientOptions(spec, database, origin)
+    if spec == null
+        return null
+    if !is_object(spec) or is_array(spec)
+        throw "Client configuration must be an object"
+    for Object/keys(spec) as name
+        if name != "maxAgeSeconds"
+            throw "Unknown client option: ${name}"
+    if database == null
+        throw "Managed client identity requires a database"
+    if database.type == "sqlite" and database.file == ":memory:"
+        throw "Managed client identity requires persistent database storage"
+    if origin == null or !origin.required or !origin.url.startsWith("https:")
+        throw "Managed client identity requires a required HTTPS origin"
+    lifetime = spec.maxAgeSeconds
+    if lifetime == null
+        lifetime = 2592000
+    if is_string(lifetime)
+        lifetime = Number(lifetime)
+    if !Number/isSafeInteger(lifetime) or lifetime < 1 or lifetime > 31536000
+        throw "Client maxAgeSeconds must be between 1 and 31536000"
+    return {
+        maxAgeSeconds: lifetime
+    }
+
+ClientIdentity(settings, database)
+    @settings = settings
+    @database = database
+
+ClientIdentity:initialize()
+    context db = @database.scope()
+    try
+        start_trans()
+        if db.parameterStyle == "postgresql"
+            lock = SQL
+                select pg_advisory_xact_lock(1818324591, 1)
+            lock.execute()
+        row = SQL
+            create table if not exists _lango_clients (
+                client_id text primary key,
+                secret_hash text not null unique,
+                expires_at bigint not null
+            )
+        row.execute()
+        commit_trans()
+    finally
+        db.finish()
+    return null
+
+ClientIdentity:begin(claims, tokens)
+    context response
+    value = readCookie()
+    if value == null and claims != null
+        response.reject(401, "ClientProofRequired")
+    hash = null
+    row = null
+    if value == null
+        value = clientSecret()
+        claims = tokens.create()
+        hash = clientDigest(value)
+        claims.clientProof = hash
+        return {
+            claims: claims
+            value: value
+            hash: hash
+            fresh: true
+            restored: false
+            rotate: false
+            closed: false
+        }
+    hash = clientDigest(value)
+    row = SQL
+        select client_id from _lango_clients where secret_hash = :hash and expires_at > :now
+    row.hash = hash
+    row.now = Date/now()
+    row.execute()
+    if !row.next()
+        response.reject(401, "ClientCookieRejected")
+    restored = claims == null
+    if restored
+        claims = tokens.create(row.client_id)
+        claims.clientProof = hash
+    if claims.clientId != row.client_id or !sameProof(claims.clientProof, hash)
+        response.reject(401, "ClientProofRequired")
+    return {
+        claims: claims
+        value: value
+        hash: hash
+        fresh: false
+        restored: restored
+        rotate: false
+        closed: false
+    }
+
+ClientIdentity:publish(identity, claims, response, tokens)
+    value = identity.value
+    if identity.rotate
+        value = clientSecret()
+    hash = clientDigest(value)
+    claims.clientProof = hash
+    encoded = tokens.sign(claims)
+    context db = @database.scope()
+    row = null
+    try
+        if identity.fresh
+            row = SQL
+                insert into _lango_clients (client_id, secret_hash, expires_at)
+                values (:id, :hash, :expires)
+            row.id = claims.clientId
+            row.hash = hash
+            row.expires = Date/now() + @settings.maxAgeSeconds * 1000
+            row.execute()
+          else
+              row = SQL
+                  update _lango_clients set secret_hash = :replacement, expires_at = :expires
+                  where client_id = :id and secret_hash = :previous and expires_at > :now
+                  returning client_id
+              row.id = claims.clientId
+              row.previous = identity.hash
+              row.replacement = hash
+              row.now = Date/now()
+              row.expires = Date/now() + @settings.maxAgeSeconds * 1000
+              row.execute()
+              if !row.next()
+                  response.reject(401, "ClientProofRequired")
+        response.header("Set-Cookie", "__Host-lango-client=${value}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${@settings.maxAgeSeconds}")
+    finally
+        db.finish()
+    identity.closed = true
+    return encoded
+
+readCookie()
+    context request
+    context response
+    headers = request.headers
+    header = headers.cookie
+    if header == null
+        return null
+    if !is_string(header) or header.length > 8192
+        response.reject(400, "InvalidCookie")
+    found = null
+    for header.split(";") as part
+        pair = part.trim()
+        index = pair.indexOf("=")
+        if index >= 0 and pair.slice(0, index) == "__Host-lango-client"
+            if found != null
+                response.reject(400, "InvalidCookie")
+            found = pair.slice(index + 1)
+    if found != null
+        pattern = new RegExp("^[a-f0-9]{64}$")
+        if !pattern.test(found)
+            response.reject(400, "InvalidCookie")
+    return found
+
+clientSecret()
+    bytes = crypto/randomBytes(32)
+    return bytes.toString("hex")
+
+clientDigest(value)
+    hash = crypto/createHash("sha256")
+    hash.update(value)
+    return hash.digest("hex")
+
+sameProof(left, right)
+    pattern = new RegExp("^[a-f0-9]{64}$")
+    if !is_string(left) or !pattern.test(left)
+        return false
+    first = Buffer/from(left, "hex")
+    second = Buffer/from(right, "hex")
+    return crypto/timingSafeEqual(first, second)

@@ -1,3 +1,6 @@
+import "../policy"
+    policyRegistry(spec)
+    resolvePolicies(routes, registry)
 import "../trace"
     responseLog(id, method, path, status)
 import "../request_identity"
@@ -76,6 +79,7 @@ test "deployment XML resolves environment keys and rejects typos"
             <static path="/assets" directory="./public" index="home.html" fallback="home.html" runtime="true"/>
             <workers workers="1" maxQueue="0"/>
             <events requestEvent="true" eventTimeoutMs="250"/>
+            <origin url="https://app.example" required="false"/>
             <jwt keyEnv="LANGO_SERVER_TEST_KEY"/>
         </deploy>
         file = path/join(dir, "deploy.xml")
@@ -84,6 +88,8 @@ test "deployment XML resolves environment keys and rejects typos"
         assert config.port == 0
         assert config.workers == 1
         assert config.requestEvent == true
+        assert config.origin.url == "https://app.example"
+        assert config.origin.required == false
         assert config.static.path == "/assets"
         assert config.static.directory == path/join(dir, "public")
         assert config.static.index == "home.html"
@@ -702,3 +708,263 @@ test "HTTP failures log at warning or error level without verbose mode"
     assert entries.length == 2
     assert entries[0] == "warn:[request-1] HTTP POST / completed status=401"
     assert entries[1] == "err:[request-2] HTTP POST /save completed status=503"
+
+
+test "origin options require an exact configured origin and strict attributes"
+    assert settings().origin == null
+    process.env.LANGO_ORIGIN_TEST = "https://app.example"
+    config = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+        origin: {
+            urlEnv: "LANGO_ORIGIN_TEST"
+        }
+    })
+    assert config.origin.url == "https://app.example"
+    assert config.origin.required
+    for ["*", "null", "https://app.example/", "https://app.example/path", "file:///tmp", "https://user@app.example"] as url
+        action = ()
+            capture url
+            options(process.cwd(), {
+                key: "01234567890123456789012345678901"
+                origin: {
+                    url: url
+                }
+            })
+        expectFailure(action)
+    for ["yes", 1] as value
+        action = ()
+            capture value
+            options(process.cwd(), {
+                key: "01234567890123456789012345678901"
+                origin: {
+                    url: "https://app.example"
+                    required: value
+                }
+            })
+        expectFailure(action)
+
+
+test "managed client identity requires persistent storage and a required HTTPS origin"
+    base = settings()
+    for [null, {}, {
+        url: "http://localhost:3000"
+    }, {
+        url: "https://app.example"
+        required: false
+    }] as origin
+        action = ()
+            capture origin
+            options(process.cwd(), {
+                key: "01234567890123456789012345678901"
+                client: {}
+                database: {
+                    type: "sqlite"
+                    file: "data/test.sqlite"
+                }
+                origin: origin
+            })
+        expectFailure(action)
+    configured = options(process.cwd(), {
+        key: "01234567890123456789012345678901"
+        client: {
+            maxAgeSeconds: "3600"
+        }
+        database: {
+            type: "sqlite"
+            file: "data/test.sqlite"
+        }
+        origin: {
+            url: "https://app.example"
+        }
+    })
+    assert configured.client.maxAgeSeconds == 3600
+    service = new Tokens(base)
+    token = new Token(service.create())
+    denyProof = ()
+        capture token
+        token.set("clientProof", "caller-chosen")
+    expectFailure(denyProof)
+    routes = new Routes(process.cwd())
+    denyEvent = ()
+        capture routes
+        routes.event({
+            name: "resume"
+            module: "unused"
+            handler: "unused"
+        })
+    expectFailure(denyEvent)
+
+test "policy names and freshness inherit through XML groups includes and Builder groups"
+    dir = fixture()
+    try
+        included = path/join(dir, "node_modules", "policy-feature")
+        fs/mkdirSync(included, {
+            recursive: true
+        })
+        fs/writeFileSync(path/join(included, "package.json"), to_json({
+            name: "policy-feature"
+            exports: {
+                "./routes.xml": "./routes.xml"
+            }
+        }))
+        fs/writeFileSync(path/join(included, "handler.mjs"), "")
+        xml = <routes>
+            <endpoint path="/read" module="./handler.mjs" handler="read"/>
+            <longpoll path="/updates" reauthSeconds="30"/>
+        </routes>
+        fs/writeFileSync(path/join(included, "routes.xml"), "${xml}")
+        xml = <routes>
+            <group path="/secure" module="./handler.mjs" policy="admin" reauthSeconds="600">
+                <endpoint path="/read" handler="read"/>
+                <group path="/account" policy="login">
+                    <endpoint path="/reauth" handler="read" reauthSeconds="0"/>
+                </group>
+                <endpoint path="/public" handler="read" policy="anonymous" reauthSeconds="0"/>
+                <include module="policy-feature" path="/feature"/>
+            </group>
+        </routes>
+        file = path/join(dir, "routes.xml")
+        fs/writeFileSync(file, "${xml}")
+        routes = new Routes(dir)
+        routes.xml(file)
+        group = new Group(routes, {
+            path: "/builder"
+            module: "./handler.mjs"
+            policy: "login"
+            reauthSeconds: 900
+        })
+        group.endpoint({
+            path: "/read"
+            handler: "read"
+        })
+        definitions = routes.definitions()
+        assert definitions[0].policy == "admin" and definitions[0].reauthSeconds == 600
+        assert definitions[1].policy == "login" and definitions[1].reauthSeconds == 0
+        assert definitions[2].policy == "anonymous" and definitions[2].reauthSeconds == 0
+        assert definitions[3].policy == "admin" and definitions[3].reauthSeconds == 600
+        assert definitions[4].policy == "admin" and definitions[4].reauthSeconds == 30
+        assert definitions[5].policy == "login" and definitions[5].reauthSeconds == 900
+        view = new ServerContext(definitions)
+        metadata = view.routes()
+        assert metadata[0].policy == "admin" and metadata[0].reauthSeconds == 600
+        first = metadata[0]
+        first.policy = "anonymous"
+        original = view.routes()
+        assert original[0].policy == "admin"
+        for [{
+            policy: "admin"
+            auth: "login"
+        }, {
+            policy: "anonymous"
+            reauthSeconds: 60
+        }, {
+            policy: "admin"
+            reauthSeconds: ""
+        }, {
+            policy: "admin"
+            reauthSeconds: -1
+        }] as bad
+            action = ()
+                capture bad
+                capture routes
+                spec = Object/assign({
+                    path: "/invalid"
+                    module: "./handler.mjs"
+                    handler: "read"
+                }, bad)
+                routes.endpoint(spec)
+            expectFailure(action)
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })
+
+test "policy token methods share legacy auth storage and keep readonly policy snapshots isolated"
+    service = new Tokens(settings())
+    token = new Token(service.create())
+    token.addPolicy("login")
+    token.addPolicy("admin")
+    assert token.hasPolicy("login") and token.hasAuth("admin")
+    names = token.policies?
+    names.add("tampered")
+    assert !token.hasPolicy("tampered")
+    token.clearPolicies()
+    assert !token.hasAuth("login")
+    token.AddAuth("legacy")
+    assert token.hasPolicy("legacy")
+    claims = token.snapshot()
+    assert claims.auth == "legacy"
+    readonly = new Token(claims, true)
+    action = ()
+        capture readonly
+        readonly.addPolicy("admin")
+    expectFailure(action)
+
+test "central policies supply defaults and refuse unknown or weakened endpoint requirements"
+    registry = policyRegistry({
+        reauthSeconds: 43200
+        items: [{
+            name: "login"
+        }, {
+            name: "admin"
+            reauthSeconds: 300
+        }]
+    })
+    assert registry.login == 43200 and registry.admin == 300
+    routes = [{
+        path: "/admin"
+        policy: "admin"
+        reauthSeconds: 0
+        reauthExplicit: false
+    }, {
+        path: "/danger"
+        policy: "admin"
+        reauthSeconds: 60
+        reauthExplicit: true
+    }, {
+        path: "/public"
+        policy: "anonymous"
+        reauthSeconds: 0
+    }]
+    resolvePolicies(routes, registry)
+    assert routes[0].reauthSeconds == 300 and routes[1].reauthSeconds == 60
+    for [0, 301] as seconds
+        action = ()
+            capture registry
+            capture seconds
+            resolvePolicies([{
+                path: "/bad"
+                policy: "admin"
+                reauthSeconds: seconds
+                reauthExplicit: true
+            }], registry)
+        expectFailure(action)
+    unknown = ()
+        capture registry
+        resolvePolicies([{
+            path: "/typo"
+            policy: "admn"
+        }], registry)
+    expectFailure(unknown)
+
+test "deployment parses central policy declarations and named overrides"
+    dir = fixture()
+    try
+        process.env.LANGO_SERVER_TEST_KEY = "01234567890123456789012345678901"
+        xml = <deploy>
+            <jwt keyEnv="LANGO_SERVER_TEST_KEY"/>
+            <policies reauthSeconds="43200">
+                <policy name="login"/>
+                <policy name="admin" reauthSeconds="300"/>
+            </policies>
+        </deploy>
+        fs/writeFileSync(path/join(dir, "deploy.xml"), "${xml}")
+        config = deployment(dir)
+        assert config.policies.login == 43200
+        assert config.policies.admin == 300
+    finally
+        fs/rmSync(dir, {
+            recursive: true
+            force: true
+        })

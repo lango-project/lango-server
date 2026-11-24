@@ -1,0 +1,84 @@
+import js global Number
+import js global Object
+
+export policyOptions(spec)
+export policyRegistry(spec)
+export resolvePolicies(routes, registry)
+
+policyOptions(spec)
+    name = spec.policy
+    if name != null and spec.auth != null and name != spec.auth
+        throw "Endpoint policy and legacy auth cannot disagree"
+    legacy = name == null
+    if name == null
+        name = spec.auth
+    if name == null
+        name = "login"
+    if !is_string(name) or name.trim() == "" or name.includes(",")
+        throw "Endpoint policy must name one permission"
+    seconds = spec.reauthSeconds
+    if seconds == null
+        seconds = 0
+    if is_string(seconds)
+        if seconds.trim() == ""
+            throw "reauthSeconds cannot be empty"
+        seconds = Number(seconds)
+    if !Number/isSafeInteger(seconds) or seconds < 0 or seconds > 31536000
+        throw "reauthSeconds must be an integer between 0 and 31536000"
+    if seconds > 0 and name == "anonymous"
+        throw "Anonymous policy cannot require password freshness"
+    return {
+        name: name
+        reauthSeconds: seconds
+        explicit: spec.reauthSeconds != null
+        legacy: legacy
+    }
+
+policyRegistry(spec)
+    if spec == null
+        return null
+    if !is_object(spec) or is_array(spec)
+        throw "Policies must be a map"
+    for spec as key: value
+        if key != "reauthSeconds" and key != "items"
+            throw "Unknown policies option: ${key}"
+    base = policyOptions({
+        policy: "login"
+        reauthSeconds: spec.reauthSeconds
+    })
+    items = spec.items
+    if !is_array(items)
+        throw "Policies require an items array"
+    result = Object/create(null)
+    for items as item
+        if !is_object(item) or is_array(item)
+            throw "Policy must be a map"
+        for item as key: value
+            if key != "name" and key != "reauthSeconds"
+                throw "Unknown policy option: ${key}"
+        name = item.name
+        if !is_string(name) or name.trim() != name or name == "" or name == "anonymous" or Object/hasOwn(result, name)
+            throw "Invalid or duplicate policy name"
+        seconds = item.reauthSeconds
+        if seconds == null
+            seconds = base.reauthSeconds
+        selected = policyOptions({
+            policy: name
+            reauthSeconds: seconds
+        })
+        result[name] = selected.reauthSeconds
+    return result
+
+resolvePolicies(routes, registry)
+    if registry == null
+        return routes
+    for routes as route
+        if route.policy != "anonymous"
+            if !Object/hasOwn(registry, route.policy)
+                throw "Undefined route policy: ${route.policy}"
+            maximum = registry[route.policy]
+            if route.reauthExplicit and maximum > 0 and (route.reauthSeconds == 0 or route.reauthSeconds > maximum)
+                throw "Route cannot weaken policy freshness: ${route.path}"
+            if !route.reauthExplicit
+                route.reauthSeconds = maximum
+    return routes

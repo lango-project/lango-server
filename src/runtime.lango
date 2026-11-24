@@ -1,3 +1,11 @@
+import js "node:crypto" as crypto
+import "./route_info"
+    routeInfo(definitions)
+import js global Number
+import "./client_identity"
+    class ClientIdentity
+import "./origin"
+    originAllowed(spec, request)
 import "./trace"
     trace(message)
 import "./route_pattern"
@@ -38,7 +46,9 @@ export class Runtime(definition)
 Runtime(definition)
     refresh = (tokens)
         return refreshTokens(tokens)
-    @serverContext = new ServerContext(definition.routes, refresh)
+    rotate = ()
+        return rotateClient()
+    @serverContext = new ServerContext(definition.routes, refresh, rotate)
     @definition = definition
     @routes = []
     @events = {}
@@ -46,6 +56,9 @@ Runtime(definition)
     @modules = {}
     @middlewares = Object/create(null)
     @database = new Database(definition.settings.database, definition.settings.root)
+    @clients = null
+    if definition.settings.client != null
+        @clients = new ClientIdentity(definition.settings.client, @database)
 
 Runtime:preload()
     trace("Worker ${threads.threadId}: preparing database, middleware, routes and events")
@@ -110,6 +123,9 @@ Runtime:prepareRoute(pending, route)
             path: route.path
             pattern: routePattern(route.path)
             auth: route.auth
+            policy: route.policy
+            reauthSeconds: route.reauthSeconds
+            legacyAuth: route.legacyAuth
             handler: handler
             middleware: middleware
         })
@@ -165,6 +181,8 @@ Runtime:handle(task)
     context request = Object/freeze(task.request)
     context response = new Response()
     context log
+    if !originAllowed(@definition.settings.origin, request)
+        return failure(403, "OriginRejected")
     fresh = request.headers.authorization == null
     claims = null
     try
@@ -178,6 +196,11 @@ Runtime:handle(task)
         trace("[${request.id}] No route matched ${request.path}")
         return failure(404, "RouteNotFound")
     route = matched.route
+    metadata = routeInfo([route])
+    selected = Object/freeze(metadata[0])
+    context request = Object/freeze(Object/assign({}, request, {
+        route: selected
+    }))
     input = null
     try
         input = JSON/parse(task.body)
@@ -191,28 +214,39 @@ Runtime:handle(task)
     catch error
         return failure(400, "InvalidPath")
     context db = @database.scope()
-    if !fresh
-        return process(task, route, input, claims, false, false)
-    return chain Promise/resolve(null)
-      then(ignored)
-        capture input
-        context token = null
-        return event("resume", input)
-      then(clientId)
-        capture task
-        capture route
-        capture input
-        restored = clientId != null
-        return process(task, route, input, @tokens.create(clientId), !restored, restored)
-      catch(error)
-        capture HttpFailure
+    context clientIdentity = null
+    restored = false
+    try
+        if @clients != null
+            context clientIdentity = @clients.begin(claims, @tokens)
+            claims = clientIdentity.claims
+            fresh = clientIdentity.fresh
+            restored = clientIdentity.restored
+        if claims == null
+            claims = @tokens.create()
+    catch error
         closeScope(db, false)
         if is_kindof(error, HttpFailure)
             return error.result()
-        log.err("[${request.id}] Client restoration failed: ${errorDetails(error)}")
+        log.err("[${request.id}] Client identity failed: ${errorDetails(error)}")
         return failure(500, "InternalServerError")
-      finally
-        closeScope(db, false)
+    return process(task, route, input, claims, fresh, restored)
+
+Runtime:rotateClient()
+    context clientIdentity
+    if @clients == null or clientIdentity == null
+        throw "Managed client identity is unavailable"
+    if clientIdentity.closed
+        throw "Client identity scope is closed"
+    clientIdentity.rotate = true
+    return null
+
+Runtime:signResponse(claims)
+    context clientIdentity
+    context response
+    if @clients == null
+        return @tokens.sign(claims)
+    return @clients.publish(clientIdentity, claims, response, @tokens)
 
 Runtime:process(task, route, input, claims, fresh, restored)
     context request
@@ -241,11 +275,22 @@ Runtime:process(task, route, input, claims, fresh, restored)
         if !fresh and is_number(validatedAt)
             stampValidation(claims, validatedAt)
             token.renew()
-        if route.auth != "anonymous" and !token.hasAuth(route.auth)
-            throw {
-                status: 401
-                error: "Unauthorized"
-            }
+        if route.policy != "anonymous" and !token.hasPolicy(route.policy)
+            if route.legacyAuth
+                response.reject(401, "Unauthorized")
+            if route.policy == "login" or !token.hasPolicy("login")
+                needLogin(route, 401, "LoginRequired")
+            response.reject(403, "Forbidden")
+        if route.reauthSeconds > 0
+            authenticatedAt = token.get("authenticatedAt")
+            now = Date/now()
+            if !Number/isSafeInteger(authenticatedAt) or authenticatedAt < 0 or authenticatedAt > now
+                needLogin(route, 403, "ReauthenticationRequired")
+            if now - authenticatedAt >= route.reauthSeconds * 1000
+                needLogin(route, 403, "ReauthenticationRequired")
+        expected = request.headers["x-lango-expected-user"]
+        if expected != null and expected != to_json(token.get("userId"))
+            response.reject(409, "IdentityChanged")
         if route.kind == "longpoll"
             return null
         trace("${requestIdentity(request.id, token)} Invoking handler; middleware=${route.middleware != null}")
@@ -255,12 +300,14 @@ Runtime:process(task, route, input, claims, fresh, restored)
             return middleware(handler, request.path, input)
         return handler(input)
       then(output)
+        capture crypto
         capture task
         capture claims
+        encoded = null
         if task.authorize == true
             closeScope(db, true)
             authorizedClaims = tokenClaims(token, claims, true)
-            encoded = @tokens.sign(authorizedClaims)
+            encoded = signResponse(authorizedClaims)
             if task.pollResult == null
                 return {
                     status: 200
@@ -281,7 +328,11 @@ Runtime:process(task, route, input, claims, fresh, restored)
         closeScope(db, true)
         result = response.result(body)
         updated = tokenClaims(token, claims, result.status < 400)
-        result.headers["x-lango-token"] = @tokens.sign(updated)
+        encoded = signResponse(updated)
+        result = response.result(body)
+        result.headers["x-lango-token"] = encoded
+        if result.status < 400 and authenticationChanged(claims, updated)
+            result.headers["x-lango-auth-change"] = "v1:${crypto/randomUUID()}"
         if task.internal != true and @definition.settings.requestEvent and "request" in @events
             return audit(request.id, result, task.body, body, updated)
         trace("${requestIdentity(request.id, token)} Request completed status=${result.status}")
@@ -297,6 +348,9 @@ Runtime:process(task, route, input, claims, fresh, restored)
         log.err("${requestIdentity(request.id, token)} Request failed: ${errorDetails(error)}")
         return failure(500, "InternalServerError")
       finally
+        context clientIdentity
+        if clientIdentity != null
+            clientIdentity.closed = true
         closeScope(db, false)
 
 Runtime:tokenClaims(token, claims, allowRenewal)
@@ -474,3 +528,27 @@ closeScope(db, strict)
         if dirty and strict
             throw "UnclosedTransaction"
     return null
+
+needLogin(route, status, reason)
+    context request
+    context token
+    throw new HttpFailure(status, reason, {
+        "content-type": "application/json; charset=utf-8"
+        "cache-control": "no-store"
+        "x-lango-need-login": "1"
+    }, {
+        reason: reason
+        path: request.path
+        policy: route.policy
+        reauthSeconds: route.reauthSeconds
+        userId: token.get("userId")
+    })
+
+authenticationChanged(previous, current)
+    context clientIdentity
+    if clientIdentity != null and clientIdentity.rotate
+        return true
+    for ["auth", "userId", "grantId", "authenticatedAt"] as name
+        if to_json(previous[name]) != to_json(current[name])
+            return true
+    return false

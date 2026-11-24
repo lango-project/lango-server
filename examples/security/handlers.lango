@@ -1,0 +1,610 @@
+import js "node:crypto" as crypto
+import js global Date
+import js global Object
+import js global JSON
+import js global Promise
+import js global process
+import js global RegExp
+import js global Math
+import "./passwords"
+    digest(value)
+    verifyPassword(password, stored)
+
+export register(input)
+export checkRoutes(routes)
+export guard(handler, path, input, represent = null)
+export bootstrap(input)
+export whoami(input)
+export guestAction(input)
+export login(input)
+export logout(input)
+export reauth(input)
+export clients(input)
+export revokeClient(input)
+export admin(input)
+export ban(input)
+
+global policy = configuration()
+
+configuration()
+    key = process.env.SECURITY_AUDIT_KEY
+    if !is_string(key) or key.length < 32
+        throw "SECURITY_AUDIT_KEY requires at least 32 characters"
+    return {
+        auditKey: key
+        rememberMs: 1209600000
+        sessionMs: 28800000
+        idleMs: 259200000
+    }
+
+register(input)
+    context token
+    checkRateLimit("register:${input.ip}", 30, 60000)
+    row = SQL
+        insert into security_clients (client_id, created_at, last_seen, registered_ip,
+            registered_user_agent, last_ip, last_user_agent)
+        values (:id, :now, :now, :ip, :agent, :ip, :agent)
+        on conflict (client_id) do nothing
+    row.id = token.clientId?
+    row.now = Date/now()
+    row.ip = observedText(input.ip, 64)
+    row.agent = observedText(input.userAgent, 512)
+    row.execute()
+    audit("client_registered", null, null, null)
+    return null
+
+checkRoutes(routes)
+    for routes as route
+        if route.kind != "endpoint" or route.middleware != "security"
+            throw "Every route in this example must use the security middleware"
+        if route.policy != "anonymous" and route.policy != "login" and route.policy != "admin"
+            throw "Unknown security policy: ${route.policy}"
+    return null
+
+guard(handler, path, input, represent = null)
+    context request
+    checkRateLimit("http:${request.remoteAddress}", 300, 60000)
+    client = boundClient()
+    credential = null
+    if path == "/auth/login" or path == "/auth/reauth"
+        credential = credentials(path, input, client)
+    return transaction(handler, path, input, client, credential, represent)
+
+checkRateLimit(key, maximum, window)
+    context response
+    global policy
+    mac = crypto/createHmac("sha256", policy.auditKey)
+    mac.update(key)
+    bucket = mac.digest("hex")
+    now = Date/now()
+    record = SQL
+        insert into security_limits (bucket, started_at, hits) values (:bucket, :now, 1)
+        on conflict (bucket) do update set
+            hits = case when security_limits.started_at <= :cutoff then 1 else security_limits.hits + 1 end,
+            started_at = case when security_limits.started_at <= :cutoff then :now else security_limits.started_at end
+        returning hits
+    record.bucket = bucket
+    record.now = now
+    record.cutoff = now - window
+    record.execute()
+    record.next()
+    if record.hits > maximum
+        retry = Math/ceil(window / 1000)
+        response.header("Retry-After", "${retry}")
+        response.reject(429, "RateLimited")
+    return null
+
+findClient(id)
+    row = SQL
+        select client_id, current_grant from security_clients where client_id = :id
+    row.id = id
+    row.execute()
+    if !row.next()
+        return null
+    return {
+        id: row.client_id
+        grantId: row.current_grant
+    }
+
+boundClient()
+    context token
+    context response
+    client = findClient(token.clientId?)
+    if client == null
+        response.reject(401, "ClientNotRegistered")
+    return client
+
+lockClient(client)
+    context response
+    meta = requestMetadata()
+    row = SQL
+        update security_clients set last_seen = :now, last_ip = :ip, last_user_agent = :agent
+        where client_id = :id returning client_id
+    row.id = client.id
+    row.now = Date/now()
+    row.ip = meta.ip
+    row.agent = meta.userAgent
+    row.execute()
+    if !row.next()
+        response.reject(401, "ClientProofRequired")
+    return null
+
+findUser(id)
+    row = SQL
+        select id, password_hash, auth_version, is_admin, banned from security_users where id = :id
+    row.id = id
+    row.execute()
+    if !row.next()
+        return null
+    return {
+        id: row.id
+        passwordHash: row.password_hash
+        version: row.auth_version
+        admin: row.is_admin == 1
+        banned: row.banned == 1
+    }
+
+findGrant(id)
+    if id == null
+        return null
+    row = SQL
+        select id, client_id, user_id, user_version, authenticated_at, expires_at,
+               last_active, remember, revoked
+        from security_grants where id = :id
+    row.id = id
+    row.execute()
+    if !row.next()
+        return null
+    return {
+        id: row.id
+        clientId: row.client_id
+        userId: row.user_id
+        version: row.user_version
+        authAt: row.authenticated_at
+        expires: row.expires_at
+        lastActive: row.last_active
+        remember: row.remember == 1
+        revoked: row.revoked == 1
+    }
+
+usable(grant, user)
+    global policy
+    now = Date/now()
+    return grant != null and user != null and !grant.revoked and !user.banned and grant.version == user.version and grant.expires > now and now - grant.lastActive < policy.idleMs
+
+lockUser(id)
+    row = SQL
+        update security_users set auth_version = auth_version where id = :id
+    row.id = id
+    row.execute()
+    return findUser(id)
+
+credentials(path, input, client)
+    context request
+    context response
+    context token
+    user = null
+    account = "missing"
+    if path == "/auth/login"
+        account = input.username
+        pattern = new RegExp("^[a-z0-9_.@+-]{3,128}$")
+        if !is_string(account)
+            response.reject(401, "InvalidCredentials")
+        account = account.trim().toLowerCase()
+        if !pattern.test(account)
+            response.reject(401, "InvalidCredentials")
+        row = SQL
+            select id from security_users where username = :username
+        row.username = account
+        row.execute()
+        if row.next()
+            user = findUser(row.id)
+      else
+          grant = findGrant(token.get("grantId"))
+          if grant == null or grant.clientId != client.id or grant.revoked
+              response.reject(401, "LoginRequired")
+          user = findUser(grant.userId)
+          account = grant.userId
+    checkRateLimit("password-ip:${request.remoteAddress}", 20, 60000)
+    checkRateLimit("password-account:${account}", 8, 900000)
+    stored = null
+    if user != null
+        stored = user.passwordHash
+    correct = verifyPassword(input.password, stored)
+    if !correct or user == null or user.banned
+        audit("credentials_rejected", null, null, null)
+        response.reject(401, "InvalidCredentials")
+    return user
+
+bootstrap(input)
+    context token
+    context response
+    context client
+    token.clearPolicies()
+    token.set("authenticatedAt", null)
+    token.set("grantId", null)
+    token.set("userId", null)
+    grant = findGrant(client.grantId)
+    user = null
+    if grant != null
+        user = lockUser(grant.userId)
+    if user != null and user.banned
+        response.reject(403, "AccountDisabled")
+    if usable(grant, user) and grant.remember
+        attachGrant(grant, user)
+    audit("bootstrap", token.get("userId"), token.get("grantId"), null)
+    return identityResult(client)
+
+transaction(handler, path, input, binding, verified, represent)
+    context response
+    identity = null
+    start_trans()
+    try
+        lockClient(binding)
+        identity = principalFor(binding, path)
+        if verified != null
+            current = lockUser(verified.id)
+            if current == null or current.banned or current.version != verified.version or current.passwordHash != verified.passwordHash
+                response.reject(401, "InvalidCredentials")
+        enforce(identity)
+        if identity.grantId != null and path != "/whoami"
+            touch = SQL
+                update security_grants set last_active = :now where id = :id
+            touch.id = identity.grantId
+            touch.now = Date/now()
+            touch.execute()
+        context principal = Object/freeze(identity)
+        context client = binding
+        context credential = verified
+        output = handler(input)
+        if is_kindof(output, Promise)
+            throw "Security example handlers must remain synchronous within the transaction"
+        if represent != null
+            output = represent(output)
+            if is_kindof(output, Promise)
+                throw "Security response representation must remain synchronous"
+        result = from_json(JSON/stringify(output))
+        audit("request_completed", identity.userId, identity.grantId, path)
+        commit_trans()
+        return result
+    catch error
+        rollbackIfOpen()
+        audit("request_denied", null, null, path)
+        throw error
+
+principalFor(client, path)
+    context token
+    context response
+    identity = {
+        clientId: token.clientId?
+        userId: null
+        grantId: null
+        admin: false
+        authAt: 0
+    }
+    if path == "/" or path == "/bootstrap" or path == "/auth/login" or path == "/auth/logout"
+        return identity
+    grant = findGrant(token.get("grantId"))
+    if grant == null
+        if token.get("grantId") != null
+            response.reject(401, "SessionRevoked")
+        return identity
+    user = lockUser(grant.userId)
+    if user != null and user.banned
+        response.reject(403, "AccountDisabled")
+    if grant.clientId != client.id or token.get("userId") != grant.userId or !usable(grant, user)
+        response.reject(401, "SessionRevoked")
+    active = currentGrant(client.id)
+    if active != grant.id
+        response.reject(401, "SessionRevoked")
+    identity.userId = user.id
+    identity.grantId = grant.id
+    identity.admin = user.admin
+    identity.authAt = grant.authAt
+    return identity
+
+currentGrant(clientId)
+    row = SQL
+        select current_grant from security_clients where client_id = :id
+    row.id = clientId
+    row.execute()
+    row.next()
+    return row.current_grant
+
+enforce(identity)
+    context response
+    context request
+    route = request.route
+    if route.policy == "anonymous"
+        return null
+    if identity.userId == null
+        response.reject(401, "LoginRequired")
+    if route.reauthSeconds > 0 and Date/now() - identity.authAt >= route.reauthSeconds * 1000
+        response.reject(403, "ReauthenticationRequired")
+    if route.policy == "admin"
+        if !identity.admin
+            response.reject(403, "AdminRequired")
+    return null
+
+whoami(input)
+    context client
+    return identityResult(client)
+
+reauth(input)
+    return reauthenticate()
+
+admin(input)
+    return {
+        message: "Admin access accepted after recent password verification"
+    }
+
+identityResult(client)
+    context token
+    grant = findGrant(token.get("grantId"))
+    userId = null
+    authenticatedAt = null
+    if grant != null and grant.clientId == client.id
+        user = findUser(grant.userId)
+        if usable(grant, user) and token.get("userId") == user.id
+            userId = user.id
+            authenticatedAt = grant.authAt
+    return {
+        clientId: token.clientId?
+        userId: userId
+        authenticatedAt: authenticatedAt
+    }
+
+guestAction(input)
+    context principal
+    context client
+    context response
+    remaining = null
+    if principal.userId == null
+        quota = SQL
+            update security_clients set guest_used = guest_used + 1
+            where client_id = :id and guest_used < 3 returning guest_used
+        quota.id = client.id
+        quota.execute()
+        if !quota.next()
+            response.reject(429, "AnonymousQuotaReached")
+        remaining = 3 - quota.guest_used
+    return {
+        accepted: true
+        anonymousRemaining: remaining
+    }
+
+login(input)
+    context server
+    context client
+    context credential
+    context response
+    global policy
+    if input.remember != null and !is_bool(input.remember)
+        response.reject(400, "InvalidRememberOption")
+    previous = currentGrant(client.id)
+    if previous != null
+        revokeGrant(previous)
+    id = crypto/randomUUID()
+    now = Date/now()
+    lifetime = policy.sessionMs
+    remembered = 0
+    if input.remember == true
+        lifetime = policy.rememberMs
+        remembered = 1
+    row = SQL
+        insert into security_grants (id, client_id, user_id, user_version,
+            created_at, last_active, expires_at, authenticated_at, remember)
+        values (:id, :client, :user, :version, :now, :now, :expires, :now, :remember)
+    row.id = id
+    row.client = client.id
+    row.user = credential.id
+    row.version = credential.version
+    row.now = now
+    row.expires = now + lifetime
+    row.remember = remembered
+    row.execute()
+    binding = SQL
+        update security_clients set current_grant = :grant where client_id = :id
+    binding.id = client.id
+    binding.grant = id
+    binding.execute()
+    server.rotateClient()
+    attachGrant(findGrant(id), credential)
+    audit("login", credential.id, id, null)
+    return {
+        loggedIn: true
+        userId: credential.id
+    }
+
+attachGrant(grant, user)
+    context token
+    setPolicies(user.admin, grant.authAt)
+    token.set("grantId", grant.id)
+    token.set("userId", user.id)
+    return null
+
+setPolicies(admin, authenticatedAt)
+    context token
+    token.clearPolicies()
+    token.addPolicy("login")
+    if admin
+        token.addPolicy("admin")
+    token.set("authenticatedAt", authenticatedAt)
+    return null
+
+revokeGrant(id)
+    row = SQL
+        update security_grants set revoked = 1 where id = :id
+    row.id = id
+    row.execute()
+    return null
+
+logout(input)
+    context token
+    context client
+    id = currentGrant(client.id)
+    if id != null
+        revokeGrant(id)
+    row = SQL
+        update security_clients set current_grant = null where client_id = :id
+    row.id = client.id
+    row.execute()
+    token.clearPolicies()
+    token.set("authenticatedAt", null)
+    token.set("grantId", null)
+    token.set("userId", null)
+    previous = findGrant(id)
+    userId = null
+    if previous != null
+        userId = previous.userId
+    audit("logout", userId, id, null)
+    return {
+        loggedOut: true
+    }
+
+reauthenticate()
+    context server
+    context principal
+    context response
+    context credential
+    if principal.userId == null or credential == null or credential.id != principal.userId
+        response.reject(401, "LoginRequired")
+    now = Date/now()
+    row = SQL
+        update security_grants set authenticated_at = :now, last_active = :now
+        where id = :id and revoked = 0
+    row.id = principal.grantId
+    row.now = now
+    row.execute()
+    server.rotateClient()
+    setPolicies(principal.admin, now)
+    audit("password_confirmed", principal.userId, principal.grantId, null)
+    return {
+        verified: true
+    }
+
+clients(input)
+    context principal
+    global policy
+    row = SQL
+        select g.client_id, g.created_at, g.last_active, g.expires_at,
+               c.created_at as registered_at, c.registered_ip, c.registered_user_agent,
+               c.last_ip, c.last_user_agent, c.last_seen
+        from security_grants g join security_users u on u.id = g.user_id
+        join security_clients c on c.client_id = g.client_id
+        where g.user_id = :user and g.revoked = 0 and g.user_version = u.auth_version
+          and g.expires_at > :now and g.last_active > :idle
+        order by g.created_at
+    row.user = principal.userId
+    row.now = Date/now()
+    row.idle = Date/now() - policy.idleMs
+    row.execute()
+    result = []
+    loop while row.next()
+        result.add({
+            clientId: row.client_id
+            createdAt: row.created_at
+            lastActive: row.last_active
+            expiresAt: row.expires_at
+            registeredAt: row.registered_at
+            registeredIp: row.registered_ip
+            registeredUserAgent: row.registered_user_agent
+            lastIp: row.last_ip
+            userAgent: row.last_user_agent
+            lastSeen: row.last_seen
+        })
+    return result
+
+revokeClient(input)
+    context principal
+    context response
+    clientId = input.clientId
+    if !is_string(clientId) or clientId.length > 128
+        response.reject(400, "InvalidClientId")
+    lookup = SQL
+        select client_id from security_grants
+        where client_id = :client and user_id = :user and revoked = 0 limit 1
+    lookup.client = clientId
+    lookup.user = principal.userId
+    lookup.execute()
+    if !lookup.next()
+        response.reject(404, "ClientNotFound")
+    clear = SQL
+        update security_clients set current_grant = null where client_id = :client
+          and current_grant in (select id from security_grants where user_id = :user and client_id = :client)
+    clear.client = clientId
+    clear.user = principal.userId
+    clear.execute()
+    revoke = SQL
+        update security_grants set revoked = 1
+        where client_id = :client and user_id = :user
+    revoke.client = clientId
+    revoke.user = principal.userId
+    revoke.execute()
+    audit("client_revoked", principal.userId, principal.grantId, clientId)
+    return {
+        revoked: true
+    }
+
+ban(input)
+    context principal
+    context response
+    userId = input.userId
+    if !is_string(userId) or userId.length > 128
+        response.reject(400, "InvalidUserId")
+    row = SQL
+        update security_users set banned = 1, auth_version = auth_version + 1 where id = :id returning id
+    row.id = userId
+    row.execute()
+    if !row.next()
+        response.reject(404, "UserNotFound")
+    revoke = SQL
+        update security_grants set revoked = 1 where user_id = :id
+    revoke.id = userId
+    revoke.execute()
+    audit("user_banned", principal.userId, principal.grantId, userId)
+    return {
+        banned: true
+    }
+
+audit(event, userId, grantId, target)
+    context request
+    context token
+    hash = null
+    if grantId != null
+        hash = digest(grantId)
+    meta = requestMetadata()
+    row = SQL
+        insert into security_audit (id, occurred_at, request_id, client_id, user_id,
+            grant_hash, event, target_id, peer_ip, user_agent)
+        values (:id, :now, :request, :client, :user, :grant, :event, :target, :ip, :agent)
+    row.id = crypto/randomUUID()
+    row.now = Date/now()
+    row.request = request.id
+    row.client = token.clientId?
+    row.user = userId
+    row.grant = hash
+    row.event = event
+    row.target = target
+    row.ip = meta.ip
+    row.agent = meta.userAgent
+    row.execute()
+    return null
+
+rollbackIfOpen()
+    if trans_state() != null
+        rollback_trans()
+    return null
+
+requestMetadata()
+    context request
+    return {
+        ip: observedText(request.remoteAddress, 64)
+        userAgent: observedText(request.headers["user-agent"], 512)
+    }
+
+observedText(value, maximum)
+    if !is_string(value)
+        return null
+    pattern = new RegExp("[\\u0000-\\u001f\\u007f]", "g")
+    return value.slice(0, maximum).replace(pattern, "")

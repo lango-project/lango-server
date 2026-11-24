@@ -1,3 +1,5 @@
+import "./policy"
+    policyOptions(spec)
 import "./route_pattern"
     routePattern(path)
 import "./middleware"
@@ -9,6 +11,10 @@ export class Endpoint(spec)
         module
         handler
         auth
+        policy
+        reauthSeconds
+        reauthExplicit
+        legacyAuth
         middleware
 
 Endpoint(spec)
@@ -22,8 +28,9 @@ Endpoint(spec)
     @middleware = spec.middleware
     if @middleware != null
         middlewareName(@middleware)
-    @auth = spec.auth
-    if @auth == null
-        @auth = "login"
-    if !is_string(@auth) or @auth == "" or @auth.includes(",")
-        throw "Endpoint auth must name one permission"
+    selected = policyOptions(spec)
+    @policy = selected.name
+    @auth = selected.name
+    @reauthSeconds = selected.reauthSeconds
+    @reauthExplicit = selected.explicit
+    @legacyAuth = selected.legacy

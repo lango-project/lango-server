@@ -152,7 +152,7 @@ JWT authorization applies to POST handlers; static files are public.
 ```
 
 * Every endpoint has a module and exported function name. A group can supply the
-  module and auth permission to its children. Includes inherit group auth as a
+  module, policy and password freshness to its children. Includes inherit these as
   default; explicit permissions inside an included file still take precedence.
   The including group does not supply handler modules across the package boundary. No handler is looked up in the
   launcher module. Absolute or relative file modules are also accepted for
@@ -334,7 +334,7 @@ a thrown/rejected error fails startup. Validators run without request contexts;
 they check configuration rather than handling requests.
 
 Inside request handlers and middleware, `context server` also provides
-`routes()`. It returns a fresh array of `{ path, kind, auth, middleware }` records,
+`routes()`. It returns a fresh array of `{ path, kind, policy, reauthSeconds, auth, middleware }` records,
 where kind is `endpoint` or `longpoll`. Module paths and handler names are not
 exposed. Mutating a snapshot cannot change routing. Startup validators receive
 the same metadata shape, allowing libraries to discover their configured URLs
@@ -409,6 +409,32 @@ contain at least 32 characters and should be cryptographically random. Only
 HS256 is accepted; algorithm, key ID, issuer, audience, expiry, and server-owned
 timestamps are checked. Keys are never generated or stored by the server.
 
+## Origin policy
+
+Origin checks are an optional server deployment policy, applied to JSON endpoint
+requests before token processing, lifecycle events and handlers:
+
+```xml
+<origin url="https://app.example.com" required="true"/>
+```
+
+Use `urlEnv="LANGO_ORIGIN"` instead of `url` to read the external origin from an
+environment variable. The two attributes are mutually exclusive. Builder accepts
+`origin: { url: "https://app.example.com", required: true }` in its configuration.
+The URL must be an exact HTTP/HTTPS origin without a trailing slash, credentials,
+path, query or fragment. Configure the externally visible origin when behind a
+proxy; the server never infers it from Host or forwarded headers.
+
+`required` defaults to true: missing, literal-null and unrelated Origin headers
+produce 403 `OriginRejected`. With `required=false`, requests without Origin are
+allowed, but a supplied Origin must still match. When Sec-Fetch-Site is present,
+only `same-origin` and `none` are accepted. This is a same-origin policy, not a
+cross-origin/CORS allowlist. Origin is not an authentication credential.
+
+Without an origin section, no Origin/Fetch Metadata policy is imposed. Static
+GET/HEAD serving remains independent. The security example enables the policy;
+its application code does not parse or validate these headers.
+
 ## Contexts and authorization
 
 Handlers and events can declare `context request`, `response`, `token`, and `log`.
@@ -442,17 +468,18 @@ Unauthorized requests do not receive a newly created token.
 
 `context token` supports:
 
-* `clientId?`, `auth?`, `expiresAt?`: getter-only identity, comma-separated
-  permissions and expiry. Direct assignment is rejected, including JavaScript
+* `clientId?`, `auth?`, `policies?`, `expiresAt?`: getter-only identity, comma-separated
+  permissions, a copied policy array and expiry. Direct assignment is rejected, including JavaScript
   attempts to shadow these properties. Use the controlled methods below to update
   claims or permissions.
-* `AddAuth("login")`, `clearAuth()`, `hasAuth("admin")`: exact trimmed membership.
+* `addPolicy("login")`, `clearPolicies()`, `hasPolicy("admin")`: exact trimmed membership.
+  `AddAuth`, `clearAuth` and `hasAuth` remain compatibility aliases.
 * `get(name)`, `set(name, value)`: JSON custom claims; server-owned JWT fields are
   protected. `get` returns a copy for structured values.
 * `renew()`: requests renewal after successful serialization and SQL cleanup on
   a reply with a status below 400. It does not immediately change `expiresAt?`.
 
-Default endpoint auth is `login`. `auth="anonymous"` permits anonymous callers;
+Default endpoint policy is `login`. `policy="anonymous"` permits anonymous callers;
 other values require that exact permission. `admin` does not imply `login`.
 The application authenticates credentials and grants permissions. These methods
 do not authenticate anyone automatically.
@@ -472,21 +499,154 @@ before renewal and signing; an expired token cannot be revived. Failed or
 rejected requests publish no renewal. Previously issued tokens remain valid
 until their own expiry unless the application's Validate policy revokes them.
 
+## Built-in route policies
+
+Policy checks are a built-in Server feature, applied on every request before
+middleware and handlers. They do not require a security middleware registration:
+
+```xml
+<endpoint path="/admin" module="@shop/admin" handler="home"
+          policy="admin" reauthSeconds="300"/>
+```
+
+After verifying login credentials, trusted application code grants policies:
+
+```lango
+import js global Date
+
+context token
+token.addPolicy("login")
+token.addPolicy("admin")
+token.set("authenticatedAt", Date/now())
+```
+
+`authenticatedAt` must be the actual password-authentication time as epoch
+milliseconds, recorded by trusted server code (for example `Date/now()` after
+`import js global Date`). Never copy this value from client input. Token refresh does not change
+this timestamp. `reauthSeconds` is the maximum permitted age; missing, invalid,
+future or stale timestamps produce 403 `ReauthenticationRequired`. Zero disables
+this extra condition. Membership and freshness checks are independent of the
+Validate event's freshness interval.
+
+`policy="anonymous"` explicitly permits anonymous requests. Otherwise one exact
+policy membership is required; there is no implicit role hierarchy. Missing
+`login` gives 401 `LoginRequired`; other missing policies give 403 `Forbidden`.
+Without a policy/auth declaration, the default remains login. Policies and
+reauthSeconds are inherited through groups/includes; an endpoint can override
+them, including explicit `reauthSeconds="0"`.
+
+Declare shared requirements in `deploy.xml` to avoid repeating durations:
+
+```xml
+<policies reauthSeconds="43200">
+    <policy name="login"/>
+    <policy name="admin" reauthSeconds="300"/>
+</policies>
+```
+
+The declaration is a child of `<deploy>`. `anonymous` is built in and exempt from
+freshness. Named policies inherit the section default unless they specify their
+own duration. All protected route policies must be declared when this section is
+present; undefined names fail startup. Without this section, existing route-level
+configuration continues to work. Builder configuration uses `policies: {
+reauthSeconds, items: [{ name, reauthSeconds }] }` with the same rules.
+
+An omitted endpoint/group duration inherits the selected policy requirement.
+An explicit duration may shorten it but cannot lengthen or disable a positive
+policy requirement. The effective requirement is resolved before route validators
+and worker startup. `0` at the policy level disables freshness for that policy.
+There is one shared `authenticatedAt`, not a timestamp per policy: any successful
+password verification refreshes the same time for all policy checks. Merely
+visiting a protected endpoint never refreshes it.
+
+Login/password-confirmation handlers must remain reachable while authentication
+is stale, normally with `policy="anonymous"`. They must verify credentials and,
+for reauthentication, the current account/grant themselves. Do not try to disable
+a central policy requirement on the password-confirmation endpoint.
+
+Only the built-in pre-handler gate returns `x-lango-need-login: 1` with a
+`needLogin` response map (reason, path, policy, reauthSeconds, userId). Missing login
+or stale authentication can then invoke the optional UI needLogin event. Missing
+permissions on an already logged-in token, invalid tokens, bans and ordinary
+handler failures do not carry this marker. The client may replay a challenged
+form request once after login; it never retries network failures. Reauthentication
+replays also send `X-Lango-Expected-User`, which Server compares with the signed
+userId before invoking the handler; a mismatch returns 409 `IdentityChanged`.
+
+Builder endpoint/group/longpoll maps accept `policy` and `reauthSeconds` too.
+Handlers/middleware can read frozen `request.route` metadata containing the matched
+path, kind, policy and reauthSeconds (without module/handler internals). The metadata
+comes from server route configuration, independently of request input.
+
+Token supports `addPolicy(name)`, `hasPolicy(name)`, `clearPolicies()` and the
+readonly `policies?` snapshot. The existing auth XML/Builder field and
+AddAuth/hasAuth/clearAuth methods remain compatibility aliases over the same signed
+JWT auth claim; no separate permission store is introduced. Conflicting auth and
+policy declarations fail configuration. Legacy auth retains its existing 401
+denial behavior.
+
+A signed policy membership is not proof that an account is still enabled or that
+its live DB role is unchanged. Applications with immediate ban/revocation or
+resource-ownership requirements retain those live checks in their guard. Server
+does not assume an application user/grant schema. The security example keeps
+those business checks and transactions in its guard, while route policy selection
+and the generic policy/freshness gate belong to Server.
+
+## Managed client identity
+
+Browser deployments can delegate client continuity and cookie binding to Server:
+
+```xml
+<client maxAgeSeconds="2592000"/>
+<origin urlEnv="LANGO_ORIGIN" required="true"/>
+<database type="sqlite" file="data/application.sqlite"/>
+```
+
+Builder accepts `client: { maxAgeSeconds: 2592000 }`. The lifetime defaults to
+30 days and is refreshed on successful replies. Enabling this feature requires
+persistent database storage and a required HTTPS origin. Without a client section,
+existing JWT-only applications retain their previous behavior.
+
+Server generates a 256-bit opaque `__Host-lango-client` cookie with Secure,
+HttpOnly, SameSite=Strict and Path=/ attributes, and no Domain. It stores only the
+credential hash and expiry in its owned `_lango_clients` table. All workers/pods
+must share that database. The table is initialized before workers start; application
+code must not read or update it. The reserved JWT `clientProof` claim binds a
+Bearer token to the matching live cookie record. Application token setters cannot
+change that claim. Unknown, expired, malformed, duplicate or mismatched credentials
+fail before application events/handlers.
+
+A first tokenless request without a cookie creates a clientId and invokes Register.
+A tokenless request with a valid cookie gets a clean token for the same clientId:
+permissions and application claims are empty, Register is skipped, and Validate
+runs without its normal freshness shortcut. Invalid/expired supplied JWTs still
+fail; Server never silently falls back to the cookie. Requests are not retried.
+There is no application identity-restoration event or cookie parser to implement.
+
+After login or password confirmation, the application requests credential renewal:
+
+```lango
+context server
+server.rotateClient()
+```
+
+Server performs the rotation when preparing a successful response, keeping the
+same clientId. The old cookie and old JWT binding then fail. Failed requests do
+not rotate credentials or publish a token. Pending requests authorized before a
+rotation can have already committed side effects; rejected operations are not
+implicitly retried. Other forms/tabs need an explicit reinitialization flow.
+Rotation is available only within the active managed client request scope.
+
+The security example uses this mechanism; its tables retain user/grant/quota/audit
+policy, not cookie storage. Cookie theft remains credential theft: with a remembered
+application grant it may restore a normal login. Cookie flags and identity binding
+do not make active XSS harmless. See [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+
 ## Events
 
 Event modules and function names are strings, resolved during worker startup.
 Promise results are supported, and events run under the request's contexts.
 
-* **resume(input)** optionally runs for tokenless requests before creating a
-  token. Verify an independent credential (for example, an HttpOnly cookie in
-  your database) and return its existing server-issued clientId (UUID v4), or
-  null for a new client. Request/response/db/log contexts are available;
-  `context token` is null. Never trust an input clientId as identity proof.
-  A restored identity gets a clean token with no old permissions/custom claims,
-  skips Register, and always runs Validate before endpoint authorization.
-  Invalid return values or failures prevent the handler and publish no token.
-  Supplied JWTs are verified first: invalid/expired JWTs never fall back to Resume.
-  Without this event, tokenless requests receive a new clientId as before.
 * **register(input)** runs for a new client after assigning `clientId`,
   before endpoint authorization. Its input is a shallow copy of the decoded
   request input (including path parameters), with server-observed `ip` and
@@ -497,8 +657,8 @@ Promise results are supported, and events run under the request's contexts.
   token claims. Failure
   prevents the handler and publishes no token. Return values are ignored; throw
   or reject to fail registration. It is not an account-creation
-  guarantee: callers can omit tokens, so application side effects need their own
-  policy. No Register event is required.
+  guarantee: JWT-only callers can omit tokens, and callers can discard cookies,
+  so application side effects need their own policy. No Register event is required.
 * **validate(input)** receives null and runs after standard JWT verification
   when the signed `validatedAt` is at least one second old. It receives a read-only
   token. Only `true` continues; `false` produces 401. Exceptions, invalid return
@@ -519,7 +679,7 @@ Promise results are supported, and events run under the request's contexts.
   the successful response. Enabling this event exposes application input/output
   to its configured handler; redact credentials and other sensitive fields there.
 
-Each event has `eventTimeoutMs`. The request deadline covers queueing, Resume, Register,
+Each event has `eventTimeoutMs`. The request deadline covers queueing, client verification, Register,
 Validate, and the handler; Request has its own event deadline after the result is
 prepared. A hard timeout terminates the worker and the pool replaces it. Tasks
 are never automatically retried: worker termination cannot roll back completed
@@ -599,7 +759,7 @@ builder.configure({
 ```
 
 Each request worker owns one persistent connection. The server creates a fresh
-DB scope before Resume/Register/Validate and keeps it available to the handler. Request
+DB scope before client verification/Register/Validate and keeps it available to the handler. Request
 gets a separate clean scope after the handler result is serialized. Scopes cannot
 be reused after completion. Physical connections are released on shutdown; worker
 replacement discards the old connection and creates a new one. If DB configuration
@@ -927,7 +1087,7 @@ their existing exception and identity logs.
 
 The [security guide](docs/security.md) and [runnable Lango example](examples/security/README.md)
 cover anonymous browser quotas, client/login attribution, remembered login,
-password reauthentication, sudo-style admin elevation, global account bans and
+password reauthentication, shared login/admin password freshness, global account bans and
 selected-client revocation. JWTs are bound to a separate HttpOnly browser cookie
 and live database state; a copied JWT alone is insufficient. The guide explicitly
 covers cookie theft, XSS and the remaining UI integration boundaries.
@@ -935,3 +1095,11 @@ covers cookie theft, XSS and the remaining UI integration boundaries.
 Run `npm run test:security` for the isolated two-worker HTTP regression suite.
 This is opt-in application policy, not a change to every server application's
 existing authentication behavior.
+
+
+Successful JSON responses carry `x-lango-auth-change: v1:<opaque-id>` when the
+request changes policy membership, userId, grantId or authenticatedAt, or rotates
+the managed client credential. Rejected responses and ordinary JWT renewal do
+not carry this marker. Lango Client uses it to update identical token scopes and
+notify other same-origin tabs to reload explicitly, preserving their visible
+inputs. The marker grants no permission and contains no token/credential data.

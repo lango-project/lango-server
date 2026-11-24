@@ -1,0 +1,734 @@
+import js "@lango-project/lango-server" as api
+import js "jsonwebtoken" as jwt
+import js "node:crypto" as crypto
+import js "node:child_process" as child
+import js "node:path" as path
+import js "node:fs" as fs
+import js global process
+import js global Date
+import js global fetch
+import js global Object
+import js global Promise
+import "../database"
+    class Database
+import "../../examples/security/schema"
+    initialize()
+    createUser(username, password, admin = false)
+import "../../examples/security/passwords"
+    verifyPassword(password, stored)
+    hashPassword(password)
+
+export scenario(state)
+
+test "password records use scrypt and reject wrong or missing accounts"
+    hash = hashPassword("Test password for Alice 2026!")
+    assert hash.startsWith("scrypt:131072:8:1:")
+    assert verifyPassword("Test password for Alice 2026!", hash)
+    assert !verifyPassword("incorrect password", hash)
+    assert !verifyPassword("Test password for Alice 2026!", null)
+
+test "security example binds clients and live grants with revocation and shared authentication freshness"
+    process.env.SECURITY_AUDIT_KEY = "test-only-audit-secret-not-for-deployment-2026"
+    state = {
+        database: null
+        server: null
+        a: {}
+        b: {}
+        c: {}
+        d: {}
+        e: {}
+        stolen: {}
+        pre: {}
+    }
+    file = path/resolve(".test-output", "security-${crypto/randomUUID()}.sqlite")
+    state.database = new Database({
+        type: "sqlite"
+        file: file
+        busyTimeoutMs: 5000
+    }, process.cwd())
+    builder = new api/Builder(process.cwd())
+    builder.configure({
+        port: 0
+        workers: 2
+        policies: examplePolicies()
+        client: {}
+        origin: {
+            url: "https://security.example"
+            required: true
+        }
+        key: "test-only-signing-secret-at-least-32-characters"
+        database: {
+            type: "sqlite"
+            file: file
+        }
+    })
+    module = path/resolve(".test-output/security-handlers.mjs")
+    builder.addMiddleware("security", {
+        module: module
+        handler: "guard"
+        validate: "checkRoutes"
+    })
+    builder.event({
+        name: "register"
+        module: module
+        handler: "register"
+    })
+    definitions = xml2obj(fs/readFileSync(path/resolve("examples/security/routes.xml"), "utf8"))
+    for definitions.children() as route
+        if route.tag() == "security"
+            attrs = route.attributes()
+            builder.endpoint({
+                path: attrs.path
+                module: module
+                handler: attrs.handler
+                middleware: "security"
+                policy: attrs.policy
+                reauthSeconds: attrs.reauthSeconds
+            })
+    state.server = builder.build()
+    return chain state.database.open()
+      then(ignored)
+        capture state
+        seed(state)
+        return state.server.start()
+      then(address)
+        capture state
+        Object/assign(state, {
+            address: address
+        })
+        return scenario(state)
+      finally
+        capture state
+        return chain state.server.close()
+          finally
+            capture state
+            state.database.close()
+      finally
+        capture file
+        capture fs
+        for ["", "-wal", "-shm"] as suffix
+            fs/rmSync("${file}${suffix}", {
+                force: true
+            })
+
+seed(state)
+    context db = state.database.scope()
+    try
+        initialize()
+        state.aliceId = createUser("alice", "Test password for Alice 2026!")
+        state.adminId = createUser("admin", "Test password for Admin 2026!", true)
+        state.bobId = createUser("bob", "Test password for Bob in 2026!")
+    finally
+        db.finish()
+    return null
+
+call(state, key, url, input, expected, extra = null)
+    if extra == null
+        extra = {}
+    client = state[key]
+    headers = {
+        "Content-Type": "application/json"
+        "User-Agent": "Lango security test"
+        "X-Forwarded-For": "203.0.113.9"
+    }
+    if extra.noOrigin != true
+        headers.Origin = "https://security.example"
+    if extra.fetchSite != null
+        headers["Sec-Fetch-Site"] = extra.fetchSite
+    if client.token != null and extra.noToken != true
+        headers.Authorization = "Bearer ${client.token}"
+    if client.cookie != null and extra.noCookie != true
+        headers.Cookie = client.cookie
+    if extra.cookie != null
+        headers.Cookie = extra.cookie
+    if extra.token != null
+        headers.Authorization = "Bearer ${extra.token}"
+    if extra.userAgent != null
+        headers["User-Agent"] = extra.userAgent
+    if extra.origin != null
+        headers.Origin = extra.origin
+    return chain fetch("http://127.0.0.1:${state.address.port}${url}", {
+        method: "POST"
+        headers: headers
+        body: to_json(input)
+    })
+      then(res)
+        capture client
+        capture expected
+        capture url
+        if res.status != expected
+            throw "${url}: expected ${expected}, received ${res.status}"
+        encoded = res.headers.get("x-lango-token")
+        if encoded != null
+            Object/assign(client, {
+                token: encoded
+            })
+        cookie = res.headers.get("set-cookie")
+        if cookie != null
+            assert cookie.includes("Secure") and cookie.includes("HttpOnly") and cookie.includes("SameSite=Strict")
+            Object/assign(client, {
+                cookie: cookie.split(";")[0]
+            })
+        return res.json()
+
+modify(state, action)
+    context db = state.database.scope()
+    row = null
+    try
+        switch action
+          case "registration"
+              row = SQL
+                  select client_id, registered_ip, registered_user_agent from security_clients
+              row.execute()
+              assert row.next()
+              id = row.client_id
+              assert is_string(id) and id.length == 36
+              assert row.registered_ip == "127.0.0.1"
+              assert row.registered_user_agent == "Lango security test"
+              assert !row.next()
+              event = SQL
+                  select client_id, user_id, peer_ip, user_agent from security_audit
+                  where event = 'client_registered' and client_id = :id
+              event.id = id
+              event.execute()
+              assert event.next()
+              assert event.client_id == id and event.user_id == null
+              assert event.peer_ip == "127.0.0.1" and event.user_agent == "Lango security test"
+          case "registered-bootstrap"
+              row = SQL
+                  select c.client_id, s.secret_hash from security_clients c
+                  join _lango_clients s on s.client_id = c.client_id where c.client_id = :id
+              row.id = state.aClient
+              row.execute()
+              assert row.next()
+              assert row.client_id == state.aClient and row.secret_hash != null
+              claims = jwt/default/decode(state.a.token)
+              assert !("sessionId" in claims) and !("browserId" in claims)
+          case "resumed"
+              row = SQL
+                  select registered_user_agent, last_user_agent from security_clients where client_id = :id
+              row.id = state.aClient
+              row.execute()
+              assert row.next()
+              assert row.registered_user_agent == "Lango security test"
+              assert row.last_user_agent == "Updated client agent"
+          case "expired-client"
+              row = SQL
+                  update _lango_clients set expires_at = :now where client_id = :id
+              row.id = state.aClient
+              row.now = Date/now() - 1
+              row.execute()
+          case "admin-expired"
+              row = SQL
+                  update security_grants set authenticated_at = :now where user_id = :id
+              row.id = state.adminId
+              row.now = Date/now() - 301000
+              row.execute()
+          case "reauth-required"
+              row = SQL
+                  update security_grants set authenticated_at = :now where user_id = :id and revoked = 0
+              row.id = state.bobId
+              row.now = Date/now() - 172800000
+              row.execute()
+          case "expired"
+              row = SQL
+                  update security_grants set expires_at = :now where user_id = :id and revoked = 0
+              row.id = state.bobId
+              row.now = Date/now() - 1
+              row.execute()
+          case "demote"
+              row = SQL
+                  update security_users set is_admin = 0 where id = :id
+              row.id = state.adminId
+              row.execute()
+          case "promote"
+              row = SQL
+                  update security_users set is_admin = 1 where id = :id
+              row.id = state.adminId
+              row.execute()
+          case "audit"
+              row = SQL
+                  select count(*) as n from security_audit where user_id = :id and event = 'login'
+              row.id = state.aliceId
+              row.execute()
+              row.next()
+              assert row.n == 3
+              row = SQL
+                  select count(*) as n from security_audit
+                  where client_id = :id and event = 'client_registered'
+              row.id = state.aClient
+              row.execute()
+              row.next()
+              assert row.n == 1
+              row = SQL
+                  select registered_user_agent, last_user_agent, last_ip
+                  from security_clients where client_id = :id
+              row.id = state.aClient
+              row.execute()
+              assert row.next()
+              assert row.registered_user_agent == "Lango security test"
+              assert row.last_ip == "127.0.0.1"
+    finally
+        db.finish()
+    return null
+
+scenario(state)
+    return chain call(state, "pre", "/whoami", {
+        clientId: "caller-controlled"
+    }, 200)
+      then(packet)
+        capture state
+        assert packet.userId == null
+        modify(state, "registration")
+        return call(state, "a", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        assert packet.userId == null
+        state.aClient = packet.clientId
+        modify(state, "registered-bootstrap")
+        return call(state, "a", "/guest/action", {}, 200)
+      then(packet)
+        capture state
+        assert packet.anonymousRemaining == 2
+        return call(state, "a", "/guest/action", {}, 200)
+      then(packet)
+        capture state
+        assert packet.anonymousRemaining == 1
+        return call(state, "a", "/guest/action", {}, 200)
+      then(packet)
+        capture state
+        assert packet.anonymousRemaining == 0
+        return call(state, "a", "/guest/action", {}, 429)
+      then(packet)
+        capture state
+        assert packet.error == "AnonymousQuotaReached"
+        Object/assign(state.stolen, {
+            token: state.a.token
+        })
+        return call(state, "stolen", "/whoami", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "ClientProofRequired"
+        return call(state, "stolen", "/bootstrap", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "ClientProofRequired"
+        return call(state, "e", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        state.e.token = state.a.token
+        return call(state, "e", "/whoami", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "ClientProofRequired"
+        state.oldCookie = state.a.cookie
+        return call(state, "a", "/auth/login", {
+            username: "alice"
+            password: "Test password for Alice 2026!"
+            remember: true
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.loggedIn
+        assert packet.userId == state.aliceId
+        return call(state, "a", "/bootstrap", {}, 401, {
+            noToken: true
+            cookie: state.oldCookie
+        })
+      then(packet)
+        capture state
+        assert packet.error == "ClientCookieRejected"
+        Object/assign(state.stolen, {
+            token: state.a.token
+        })
+        return call(state, "stolen", "/account/clients", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "ClientProofRequired"
+        return call(state, "a", "/account/clients", {}, 200)
+      then(packet)
+        capture state
+        assert packet.length == 1
+        return call(state, "a", "/admin", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "Forbidden"
+        return call(state, "b", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        state.bClient = packet.clientId
+        return call(state, "b", "/auth/login", {
+            username: "alice"
+            password: "Test password for Alice 2026!"
+            remember: true
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.loggedIn
+        return call(state, "a", "/account/clients", {}, 200)
+      then(packet)
+        capture state
+        assert packet.length == 2
+        return call(state, "a", "/account/revoke-client", {
+            clientId: state.bClient
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.revoked
+        return call(state, "b", "/account/clients", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "SessionRevoked"
+        return call(state, "b", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        assert packet.userId == null
+        return call(state, "a", "/bootstrap", {}, 200, {
+            noToken: true
+            userAgent: "Updated client agent"
+        })
+      then(packet)
+        capture state
+        assert packet.clientId == state.aClient
+        modify(state, "resumed")
+        assert packet.userId == state.aliceId
+        return call(state, "a", "/account/clients", {}, 200)
+      then(packet)
+        capture state
+        assert packet.length == 1
+        return call(state, "c", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        assert packet.userId == null
+        return call(state, "c", "/auth/login", {
+            username: "admin"
+            password: "Test password for Admin 2026!"
+            remember: true
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.loggedIn
+        state.cAuthenticatedAt = sharedTimestamp(state, "c")
+        return call(state, "c", "/admin", {}, 200)
+      then(packet)
+        capture state
+        assert packet.message != null
+        return call(state, "c", "/auth/reauth", {
+            password: "Wrong password entered here"
+        }, 401)
+      then(packet)
+        capture state
+        assert packet.error == "InvalidCredentials"
+        assert sharedTimestamp(state, "c") == state.cAuthenticatedAt
+        return call(state, "c", "/auth/reauth", {
+            password: "Test password for Admin 2026!"
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.verified
+        Object/assign(state.stolen, {
+            token: state.c.token
+        })
+        return call(state, "stolen", "/admin", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "ClientProofRequired"
+        return call(state, "c", "/admin", {}, 200)
+      then(packet)
+        capture state
+        assert packet.message != null
+        modify(state, "admin-expired")
+        return call(state, "c", "/admin", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "ReauthenticationRequired"
+        return call(state, "c", "/account/clients", {}, 200)
+      then(packet)
+        capture state
+        assert is_array(packet)
+        return call(state, "c", "/auth/reauth", {
+            password: "Test password for Admin 2026!"
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.verified
+        assert sharedTimestamp(state, "c") >= state.cAuthenticatedAt
+        return call(state, "c", "/admin", {}, 200)
+      then(packet)
+        capture state
+        assert packet.message != null
+        return call(state, "c", "/account/clients", {}, 200)
+      then(packet)
+        capture state
+        assert is_array(packet)
+        modify(state, "demote")
+        return call(state, "c", "/admin", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "AdminRequired"
+        modify(state, "promote")
+        return call(state, "d", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        state.dClient = packet.clientId
+        return call(state, "d", "/auth/login", {
+            username: "bob"
+            password: "Test password for Bob in 2026!"
+            remember: false
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.loggedIn
+        return call(state, "d", "/account/revoke-client", {
+            clientId: state.aClient
+        }, 404)
+      then(packet)
+        capture state
+        assert packet.error == "ClientNotFound"
+        modify(state, "reauth-required")
+        return call(state, "d", "/account/clients", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "ReauthenticationRequired"
+        return call(state, "d", "/auth/reauth", {
+            password: "Test password for Bob in 2026!"
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.verified
+        return call(state, "d", "/account/clients", {}, 200)
+      then(packet)
+        capture state
+        assert packet.length == 1
+        return call(state, "d", "/bootstrap", {}, 200)
+      then(packet)
+        capture state
+        assert packet.userId == null
+        return call(state, "d", "/account/clients", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "LoginRequired"
+        return call(state, "d", "/auth/login", {
+            username: "bob"
+            password: "Test password for Bob in 2026!"
+            remember: true
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.loggedIn
+        modify(state, "expired")
+        return call(state, "d", "/account/clients", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "SessionRevoked"
+        return call(state, "b", "/auth/login", {
+            username: "alice"
+            password: "Test password for Alice 2026!"
+            remember: true
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.loggedIn
+        return call(state, "c", "/admin/ban", {
+            userId: state.aliceId
+        }, 200)
+      then(packet)
+        capture state
+        assert packet.banned
+        return call(state, "a", "/account/clients", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "AccountDisabled"
+        return call(state, "b", "/account/clients", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "AccountDisabled"
+        return call(state, "a", "/bootstrap", {}, 403)
+      then(packet)
+        capture state
+        assert packet.error == "AccountDisabled"
+        return call(state, "a", "/auth/logout", {}, 200)
+      then(packet)
+        capture state
+        assert packet.loggedOut
+        return call(state, "a", "/guest/action", {}, 429)
+      then(packet)
+        capture state
+        assert packet.error == "AnonymousQuotaReached"
+        return call(state, "b", "/whoami", {}, 403, {
+            origin: "https://attacker.example"
+        })
+      then(packet)
+        capture state
+        assert packet.error == "OriginRejected"
+        return call(state, "pre", "/bootstrap", {}, 403, {
+            noToken: true
+            noOrigin: true
+        })
+      then(packet)
+        capture state
+        assert packet.error == "OriginRejected"
+        return call(state, "b", "/whoami", {}, 403, {
+            fetchSite: "cross-site"
+        })
+      then(packet)
+        capture state
+        assert packet.error == "OriginRejected"
+        return call(state, "a", "/whoami", {}, 200, {
+            fetchSite: "same-origin"
+        })
+      then(packet)
+        capture state
+        assert packet.userId == null
+        modify(state, "audit")
+        return chain badPasswords(state)
+          then(ignored)
+            capture state
+            return transportFailures(state)
+
+
+badPasswords(state)
+    pending = Promise/resolve(null)
+    for range(9) as index
+        pending = chain pending
+          then(ignored)
+            capture state
+            capture index
+            expected = 401
+            if index == 8
+                expected = 429
+            return call(state, "a", "/auth/login", {
+                username: "unknown-account"
+                password: "Incorrect password attempted here"
+            }, expected)
+    return pending
+
+test "security startup validator rejects a route that bypasses the gate"
+    process.env.SECURITY_AUDIT_KEY = "test-only-audit-secret-not-for-deployment-2026"
+    builder = new api/Builder(process.cwd())
+    builder.configure({
+        port: 0
+        key: "test-only-signing-secret-at-least-32-characters"
+    })
+    module = path/resolve(".test-output/security-handlers.mjs")
+    builder.addMiddleware("security", {
+        module: module
+        handler: "guard"
+        validate: "checkRoutes"
+    })
+    builder.endpoint({
+        path: "/unprotected"
+        module: module
+        handler: "whoami"
+        auth: "anonymous"
+    })
+    server = builder.build()
+    return chain server.start()
+      then(ignored)
+        throw "An unprotected route was accepted"
+      catch(error)
+        message = "${error}"
+        assert message.includes("Every route in this example")
+      finally
+        capture server
+        return server.close()
+
+
+test "security provisioning CLI actually creates an account without printing the password"
+    file = path/resolve(".test-output", "security-setup-${crypto/randomUUID()}.sqlite")
+    password = "A temporary setup test password 2026!"
+    env = Object/assign({}, process.env, {
+        SECURITY_SETUP_PASSWORD: password
+    })
+    try
+        output = child/execFileSync(process.execPath, ["examples/security/dist/setup.mjs", file, "cli-admin", "admin"], {
+            env: env
+            encoding: "utf8"
+            stdio: ["ignore", "pipe", "pipe"]
+        })
+        assert output.includes("Created user ")
+        assert !output.includes(password)
+        assert fs/existsSync(file)
+        initialized = child/execFileSync(process.execPath, ["examples/security/dist/setup.mjs", file], {
+            encoding: "utf8"
+            stdio: ["ignore", "pipe", "pipe"]
+        })
+        assert initialized.includes("Initialized security schema")
+    finally
+        for ["", "-wal", "-shm"] as suffix
+            fs/rmSync("${file}${suffix}", {
+                force: true
+            })
+
+
+transportFailures(state)
+    return chain call(state, "a", "/bootstrap", {}, 401, {
+        token: "invalid-jwt"
+    })
+      then(packet)
+        capture state
+        assert packet.error == "Unauthorized"
+        return call(state, "a", "/bootstrap", {}, 400, {
+            cookie: "${state.a.cookie}; ${state.a.cookie}"
+        })
+      then(packet)
+        capture state
+        assert packet.error == "InvalidCookie"
+        return call(state, "a", "/bootstrap", {}, 400, {
+            cookie: "__Host-lango-client=malformed"
+        })
+      then(packet)
+        capture state
+        assert packet.error == "InvalidCookie"
+        return call(state, "a", "/bootstrap", {}, 401, {
+            noToken: true
+            cookie: "__Host-lango-client=0000000000000000000000000000000000000000000000000000000000000000"
+        })
+      then(packet)
+        capture state
+        assert packet.error == "ClientCookieRejected"
+        return call(state, "a", "/whoami", {}, 200)
+      then(packet)
+        capture state
+        assert packet.clientId == state.aClient
+        modify(state, "expired-client")
+        return call(state, "a", "/whoami", {}, 401)
+      then(packet)
+        capture state
+        assert packet.error == "ClientCookieRejected"
+        modify(state, "audit")
+        return null
+
+examplePolicies()
+    xml = xml2obj(fs/readFileSync("examples/security/deploy.xml", "utf8"))
+    for xml.children() as section
+        if section.tag() == "policies"
+            items = []
+            for section.children() as item
+                items.add(item.attributes())
+            return {
+                reauthSeconds: section.reauthSeconds
+                items: items
+            }
+    throw "Security example requires central policies"
+
+sharedTimestamp(state, key)
+    client = state[key]
+    claims = jwt/default/decode(client.token)
+    assert !("adminProof" in claims)
+    context db = state.database.scope()
+    try
+        row = SQL
+            select authenticated_at from security_grants where id = :id
+        row.id = claims.grantId
+        row.execute()
+        assert row.next()
+        assert claims.authenticatedAt == row.authenticated_at
+        legacy = SQL
+            select count(*) as total from pragma_table_info('security_grants')
+            where name in ('admin_until', 'admin_nonce')
+        legacy.execute()
+        assert legacy.next() and legacy.total == 0
+        return row.authenticated_at
+    finally
+        db.finish()

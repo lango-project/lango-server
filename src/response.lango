@@ -28,7 +28,7 @@ Response:header(name, value)
     if !is_string(name) or !is_string(value)
         throw "Header name and value must be strings"
     name = name.toLowerCase()
-    if contains(["x-lango-token", "content-length", "transfer-encoding", "connection", "content-type"], name)
+    if contains(["x-lango-auth-change", "x-lango-need-login", "x-lango-token", "content-length", "transfer-encoding", "connection", "content-type"], name)
         throw "Reserved response header: ${name}"
     if name.includes("\r") or name.includes("\n") or value.includes("\r") or value.includes("\n")
         throw "Invalid response header"

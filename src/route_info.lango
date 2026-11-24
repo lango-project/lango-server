@@ -10,6 +10,8 @@ routeInfo(definitions)
             path: route.path
             kind: kind
             auth: route.auth
+            policy: route.policy
+            reauthSeconds: route.reauthSeconds
             middleware: route.middleware
         })
     return result

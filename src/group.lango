@@ -1,54 +1,49 @@
 import js global Object
 
-export class Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null)
+export class Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null, inheritedPolicy = null, inheritedReauthSeconds = null)
     methods
         endpoint(spec)
         longpoll(spec)
         group(spec)
         include(spec)
 
-Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null)
+Group(routes, spec, prefix = "", inheritedModule = null, inheritedAuth = null, inheritedPolicy = null, inheritedReauthSeconds = null)
     if !is_string(spec.path) or !spec.path.startsWith("/") or spec.path.endsWith("/") or spec.path.includes("*")
         throw "Group requires a path without a trailing slash or wildcard"
     @routes = routes
     @prefix = "${prefix}${spec.path}"
     @module = spec.module
     @auth = spec.auth
+    @policy = spec.policy
+    @reauthSeconds = spec.reauthSeconds
     if @module == null
         @module = inheritedModule
-    if @auth == null
+    if @auth == null and @policy == null
         @auth = inheritedAuth
+        @policy = inheritedPolicy
+    if @reauthSeconds == null
+        @reauthSeconds = inheritedReauthSeconds
 
 Group:endpoint(spec)
     if !is_string(spec.path) or !spec.path.startsWith("/")
         throw "Endpoint path must begin with /"
-    mod = spec.module
-    auth = spec.auth
-    if mod == null
-        mod = @module
-    if auth == null
-        auth = @auth
-    @routes.endpoint({
-        path: "${@prefix}${spec.path}"
-        module: mod
-        handler: spec.handler
-        auth: auth
-        middleware: spec.middleware
-    })
+    item = merged(spec)
+    item.path = "${@prefix}${spec.path}"
+    if item.module == null
+        item.module = @module
+    @routes.endpoint(item)
     return @this
 
 Group:longpoll(spec)
-    item = Object/assign({}, spec)
+    item = merged(spec)
     item.path = "${@prefix}${spec.path}"
-    if item.auth == null
-        item.auth = @auth
     if item.fallback != null
         item.fallback = "${@prefix}${item.fallback}"
     @routes.longpoll(item)
     return @this
 
 Group:group(spec)
-    return new Group(@routes, spec, @prefix, @module, @auth)
+    return new Group(@routes, spec, @prefix, @module, @auth, @policy, @reauthSeconds)
 
 Group:include(spec)
     mount = spec.path
@@ -57,5 +52,14 @@ Group:include(spec)
     @routes.include({
         module: spec.module
         path: "${@prefix}${mount}"
-    }, @auth)
+    }, @auth, @policy, @reauthSeconds)
     return @this
+
+Group:merged(spec)
+    item = Object/assign({}, spec)
+    if item.auth == null and item.policy == null
+        item.auth = @auth
+        item.policy = @policy
+    if item.reauthSeconds == null
+        item.reauthSeconds = @reauthSeconds
+    return item

@@ -1,3 +1,5 @@
+import "./client_identity"
+    class ClientIdentity
 import js global Promise
 import "./database_scope"
     class DatabaseScope
@@ -6,7 +8,7 @@ import "./sqlite_adapter"
 import "./postgres_adapter"
     class PostgresAdapter
 
-export prepareDatabase(settings)
+export prepareDatabase(settings, root = null, client = null)
 
 export class Database(settings, root = null)
     methods
@@ -56,11 +58,20 @@ Database:close()
         @adapter = null
     return null
 
-prepareDatabase(settings)
-    if settings == null or settings.type != "sqlite" or settings.file == ":memory:"
+prepareDatabase(settings, root = null, client = null)
+    if settings == null
         return Promise/resolve(null)
-    database = new Database(settings)
+    if client == null and (settings.type != "sqlite" or settings.file == ":memory:")
+        return Promise/resolve(null)
+    database = new Database(settings, root)
     return chain database.open()
+      then(ignored)
+        capture database
+        capture client
+        if client != null
+            identity = new ClientIdentity(client, database)
+            identity.initialize()
+        return null
       finally
         capture database
         database.close()

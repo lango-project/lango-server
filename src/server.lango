@@ -1,3 +1,5 @@
+import "./policy"
+    resolvePolicies(routes, registry)
 import "./trace"
     trace(message)
     responseLog(id, method, path, status)
@@ -6,7 +8,7 @@ import "./longpoll_broker"
 import "./longpoll_session"
     class LongpollSession
 import "./database"
-    prepareDatabase(settings)
+    prepareDatabase(settings, root = null, client = null)
 import "./error_details"
     errorDetails(error)
 import js "node:http" as http
@@ -55,6 +57,8 @@ Server(path, definition = null)
     if definition == null
         throw "Use Server(directory) or Builder.build()"
     @definition = from_json(to_json(definition))
+    settings = @definition.settings
+    resolvePolicies(@definition.routes, settings.policies)
     @broker = new LongpollBroker(@definition.settings, @definition.routes)
     @polls = Object/create(null)
     @state = "new"
@@ -103,7 +107,7 @@ Server:launch()
     return chain @broker.open()
       then(ignored)
         capture settings
-        return prepareDatabase(settings.database)
+        return prepareDatabase(settings.database, settings.root, settings.client)
       then(ignored)
         capture path
         capture modules

@@ -1,0 +1,56 @@
+import js global Object
+import js global URL
+import js global process
+
+export originOptions(spec)
+export originAllowed(spec, request)
+
+originOptions(spec)
+    if spec == null
+        return null
+    if !is_object(spec) or is_array(spec)
+        throw "Origin configuration must be an object"
+    for Object/keys(spec) as name
+        if name != "url" and name != "urlEnv" and name != "required"
+            throw "Unknown origin option: ${name}"
+    if spec.url != null and spec.urlEnv != null
+        throw "Origin requires either url or urlEnv, not both"
+    url = spec.url
+    if spec.urlEnv != null
+        if !is_string(spec.urlEnv) or spec.urlEnv == ""
+            throw "Origin urlEnv must name an environment variable"
+        envName = spec.urlEnv
+        url = process.env[envName]
+    if !is_string(url) or url == ""
+        throw "Origin URL is required"
+    parsed = null
+    try
+        parsed = new URL(url)
+    catch error
+        throw "Origin requires an exact HTTP or HTTPS origin"
+    if (parsed.protocol != "https:" and parsed.protocol != "http:") or parsed.origin != url
+        throw "Origin requires an exact HTTP or HTTPS origin without credentials, path, query or fragment"
+    required = spec.required
+    if required == null or required == "true"
+        required = true
+    if required == "false"
+        required = false
+    if !is_bool(required)
+        throw "Origin required must be true or false"
+    return {
+        url: url
+        required: required
+    }
+
+originAllowed(spec, request)
+    if spec == null
+        return true
+    headers = request.headers
+    value = headers.origin
+    if value == null
+        if spec.required
+            return false
+    if value != null and value != spec.url
+        return false
+    site = headers["sec-fetch-site"]
+    return site == null or site == "same-origin" or site == "none"

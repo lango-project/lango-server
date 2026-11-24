@@ -22,7 +22,7 @@ Tokens:create(clientId = null)
       else
           pattern = new RegExp("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
           if !is_string(clientId) or !pattern.test(clientId)
-              throw "Resume must return an existing server clientId or null"
+              throw "Invalid server clientId"
     settings = @settings
     now = Math/floor(Date/now() / 1000)
     return {

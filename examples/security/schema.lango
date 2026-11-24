@@ -1,0 +1,91 @@
+import js "node:crypto" as crypto
+import js global RegExp
+import "./passwords"
+    hashPassword(password)
+
+export initialize()
+export createUser(username, password, admin = false)
+
+initialize()
+    users = SQL
+        create table if not exists security_users (
+            id text primary key,
+            username text not null unique,
+            password_hash text not null,
+            auth_version integer not null default 1,
+            is_admin integer not null default 0,
+            banned integer not null default 0
+        )
+    users.execute()
+    clients = SQL
+        create table if not exists security_clients (
+            client_id text primary key,
+            current_grant text,
+            created_at bigint not null,
+            last_seen bigint not null,
+            registered_ip text,
+            registered_user_agent text,
+            last_ip text,
+            last_user_agent text,
+            guest_used integer not null default 0
+        )
+    clients.execute()
+    grants = SQL
+        create table if not exists security_grants (
+            id text primary key,
+            client_id text not null references security_clients(client_id),
+            user_id text not null references security_users(id),
+            user_version integer not null,
+            created_at bigint not null,
+            last_active bigint not null,
+            expires_at bigint not null,
+            authenticated_at bigint not null,
+            remember integer not null,
+            revoked integer not null default 0
+        )
+    grants.execute()
+    audit = SQL
+        create table if not exists security_audit (
+            id text primary key,
+            occurred_at bigint not null,
+            request_id text not null,
+            client_id text not null,
+            user_id text,
+            grant_hash text,
+            event text not null,
+            target_id text,
+            peer_ip text,
+            user_agent text
+        )
+    audit.execute()
+    attempts = SQL
+        create table if not exists security_limits (
+            bucket text primary key,
+            started_at bigint not null,
+            hits integer not null
+        )
+    attempts.execute()
+    index = SQL
+        create index if not exists security_grants_user on security_grants(user_id, client_id)
+    index.execute()
+    return null
+
+createUser(username, password, admin = false)
+    pattern = new RegExp("^[a-z0-9_.@+-]{3,128}$")
+    name = null
+    if is_string(username)
+        name = username.trim().toLowerCase()
+    if name == null or !pattern.test(name)
+        throw "Username must contain 3 to 128 supported ASCII characters"
+    id = crypto/randomUUID()
+    record = SQL
+        insert into security_users (id, username, password_hash, is_admin)
+        values (:id, :username, :hash, :admin)
+    record.id = id
+    record.username = name
+    record.hash = hashPassword(password)
+    record.admin = 0
+    if admin
+        record.admin = 1
+    record.execute()
+    return id

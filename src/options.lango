@@ -1,3 +1,9 @@
+import "./policy"
+    policyRegistry(spec)
+import "./client_identity"
+    clientOptions(spec, database, origin)
+import "./origin"
+    originOptions(spec)
 import "./longpoll_options"
     redisOptions(spec)
 import "./database_options"
@@ -44,6 +50,9 @@ options(root, supplied = null)
         database: null
         redis: null
         static: null
+        origin: null
+        client: null
+        policies: null
     }
     if supplied != null
         for supplied as key: value
@@ -79,9 +88,12 @@ options(root, supplied = null)
             throw "JWT keys must contain at least 32 characters"
     result.keys = keys
     result.key = null
+    result.policies = policyRegistry(result.policies)
     result.database = databaseOptions(result.root, result.database, result.workers)
     result.redis = redisOptions(result.redis)
     result.static = staticOptions(result.root, result.static)
+    result.origin = originOptions(result.origin)
+    result.client = clientOptions(result.client, result.database, result.origin)
     return result
 
 deployment(directory)
@@ -94,10 +106,31 @@ deployment(directory)
     seen = []
     for root.children() as tag
         name = tag.tag()
-        if seen.includes(name) or tag.children().length != 0 or tag.innerText().trim() != ""
+        if seen.includes(name) or (name != "policies" and tag.children().length != 0) or tag.innerText().trim() != ""
             throw "Duplicate or nonempty deployment section: ${name}"
         seen.add(name)
         switch name
+          case "policies"
+              attributes(tag, ["reauthSeconds"])
+              items = []
+              for tag.children() as child
+                  if child.tag() != "policy" or child.children().length != 0 or child.innerText().trim() != ""
+                      throw "Policies may contain only empty policy elements"
+                  attributes(child, ["name", "reauthSeconds"])
+                  items.add(child.attributes())
+              settings.policies = {
+                  reauthSeconds: tag.reauthSeconds
+                  items: items
+              }
+              continue
+          case "client"
+              attributes(tag, ["maxAgeSeconds"])
+              settings.client = tag.attributes()
+              continue
+          case "origin"
+              attributes(tag, ["url", "urlEnv", "required"])
+              settings.origin = tag.attributes()
+              continue
           case "static"
               attributes(tag, ["path", "directory", "index", "fallback", "runtime"])
               settings.static = tag.attributes()

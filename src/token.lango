@@ -6,8 +6,12 @@ export class Token(claims, readonly = false)
     properties
         clientId?
         auth?
+        policies?
         expiresAt?
     methods
+        addPolicy(permission)
+        hasPolicy(permission)
+        clearPolicies()
         AddAuth(permission)
         clearAuth()
         hasAuth(permission)
@@ -35,28 +39,45 @@ Token:auth?
 Token:expiresAt?
     return @expiresAt
 
-Token:AddAuth(permission)
+Token:addPolicy(permission)
     writable()
     if !is_string(permission) or permission.trim() == "" or permission.includes(",")
         throw "Permission must be a nonempty name without commas"
     permission = permission.trim()
-    if !hasAuth(permission)
+    if !hasPolicy(permission)
         if @auth == ""
             @auth = permission
           else
               @auth = "${@auth}, ${permission}"
     return @this
 
-Token:clearAuth()
+Token:clearPolicies()
     writable()
     @auth = ""
     return @this
 
-Token:hasAuth(permission)
+Token:hasPolicy(permission)
     for @auth.split(",") as name
         if name.trim() == permission
             return true
     return false
+
+Token:policies?
+    result = []
+    for @auth.split(",") as name
+        value = name.trim()
+        if value != ""
+            result.add(value)
+    return result
+
+Token:AddAuth(permission)
+    return addPolicy(permission)
+
+Token:hasAuth(permission)
+    return hasPolicy(permission)
+
+Token:clearAuth()
+    return clearPolicies()
 
 Token:get(name)
     if !Object/hasOwn(@claims, name)
@@ -65,7 +86,7 @@ Token:get(name)
 
 Token:set(name, value)
     writable()
-    if contains(["clientId", "auth", "iat", "exp", "iss", "aud", "validatedAt", "nbf", "__proto__", "constructor", "prototype"], name)
+    if contains(["clientProof", "clientId", "auth", "iat", "exp", "iss", "aud", "validatedAt", "nbf", "__proto__", "constructor", "prototype"], name)
         throw "Reserved token field: ${name}"
     @claims[name] = from_json(to_json(value))
     return @this
