@@ -1,6 +1,6 @@
 {
   "name": "@lango-project/lango-server",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "A small JSON HTTP server for Lango applications.",
   "type": "module",
   "license": "Apache-2.0",
@@ -47,6 +47,6 @@
     "serve-static": "^2.2.1"
   },
   "devDependencies": {
-    "@lango-project/lango-js": "^0.1.17"
+    "@lango-project/lango-js": "^0.1.18"
   }
 }
